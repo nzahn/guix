@@ -1,0 +1,55 @@
+{
+  "name": "vscode-guix-studio",
+  "displayName": "GUIX Studio (Preview)",
+  "description": "Preview VS Code extension scaffolding for GUIX Studio (.gxp) projects.",
+  "version": "0.0.1",
+  "publisher": "eclipse-threadx",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "guix.openProject",
+        "title": "GUix: Open Project (.gxp)"
+      },
+      {
+        "command": "guix.projectSummary",
+        "title": "GUix: Project Summary"
+      },
+      {
+        "command": "guix.generateOutputs",
+        "title": "GUix: Generate Outputs"
+      },
+      {
+        "command": "guix.validateProject",
+        "title": "GUix: Validate Project"
+      }
+    ],
+    "languages": [
+      {
+        "id": "guix-gxp",
+        "aliases": [
+          "GUIX Studio Project"
+        ],
+        "extensions": [
+          ".gxp"
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "node -e \"console.log('lint not configured yet')\""
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.3"
+  }
+}
