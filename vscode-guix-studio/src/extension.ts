@@ -44,6 +44,9 @@ type CliMigrateResult = {
 	error?: string;
 };
 
+type CliSource = 'config' | 'env' | 'workspace' | 'bundled' | 'path';
+type ResolvedCli = { path: string; source: CliSource; detail?: string };
+
 let outputChannel: vscode.OutputChannel | undefined;
 function getOutputChannel(): vscode.OutputChannel {
 	if (!outputChannel) {
@@ -106,18 +109,18 @@ class GuixProjectsProvider implements vscode.TreeDataProvider<GuixProjectItem> {
 	}
 }
 
-function findCliCandidatePaths(extensionContext: vscode.ExtensionContext): string[] {
-	const candidates: string[] = [];
+function findCliCandidateSpecs(extensionContext: vscode.ExtensionContext): Array<{ candidate: string; source: CliSource }> {
+	const candidates: Array<{ candidate: string; source: CliSource }> = [];
 
 	const configured = vscode.workspace.getConfiguration('guixStudio').get<string>('cli.path');
 	if (configured && configured.trim()) {
-		candidates.push(configured.trim());
+		candidates.push({ candidate: configured.trim(), source: 'config' });
 	}
 
 	// 1) User override (best for local dev)
 	const fromEnv = process.env.GUIX_STUDIO_CLI_PATH;
 	if (fromEnv) {
-		candidates.push(fromEnv);
+		candidates.push({ candidate: fromEnv, source: 'env' });
 	}
 
 	// 2) Workspace build output (recommended during Phase 1)
@@ -126,16 +129,16 @@ function findCliCandidatePaths(extensionContext: vscode.ExtensionContext): strin
 		const root = folder.uri.fsPath;
 
 		// Current recommended build location (repo-local)
-		candidates.push(path.join(root, 'tools', 'guix_studio_cli', 'build', 'guix_studio_cli'));
-		candidates.push(path.join(root, 'tools', 'guix_studio_cli', 'build', 'Debug', 'guix_studio_cli.exe'));
-		candidates.push(path.join(root, 'tools', 'guix_studio_cli', 'build', 'Release', 'guix_studio_cli.exe'));
-		candidates.push(path.join(root, 'tools', 'guix_studio_cli', 'build', 'guix_studio_cli.exe'));
+		candidates.push({ candidate: path.join(root, 'tools', 'guix_studio_cli', 'build', 'guix_studio_cli'), source: 'workspace' });
+		candidates.push({ candidate: path.join(root, 'tools', 'guix_studio_cli', 'build', 'Debug', 'guix_studio_cli.exe'), source: 'workspace' });
+		candidates.push({ candidate: path.join(root, 'tools', 'guix_studio_cli', 'build', 'Release', 'guix_studio_cli.exe'), source: 'workspace' });
+		candidates.push({ candidate: path.join(root, 'tools', 'guix_studio_cli', 'build', 'guix_studio_cli.exe'), source: 'workspace' });
 
 		// Alternative out-of-source build location (from older docs)
-		candidates.push(path.join(root, 'build', 'guix_studio_cli', 'guix_studio_cli'));
-		candidates.push(path.join(root, 'build', 'guix_studio_cli', 'Debug', 'guix_studio_cli.exe'));
-		candidates.push(path.join(root, 'build', 'guix_studio_cli', 'Release', 'guix_studio_cli.exe'));
-		candidates.push(path.join(root, 'build', 'guix_studio_cli', 'guix_studio_cli.exe'));
+		candidates.push({ candidate: path.join(root, 'build', 'guix_studio_cli', 'guix_studio_cli'), source: 'workspace' });
+		candidates.push({ candidate: path.join(root, 'build', 'guix_studio_cli', 'Debug', 'guix_studio_cli.exe'), source: 'workspace' });
+		candidates.push({ candidate: path.join(root, 'build', 'guix_studio_cli', 'Release', 'guix_studio_cli.exe'), source: 'workspace' });
+		candidates.push({ candidate: path.join(root, 'build', 'guix_studio_cli', 'guix_studio_cli.exe'), source: 'workspace' });
 	}
 
 	// 3) Extension-bundled (future: ship per-platform binaries)
@@ -145,9 +148,9 @@ function findCliCandidatePaths(extensionContext: vscode.ExtensionContext): strin
 	// - bin/<platform>-<arch>/guix_studio_cli
 	const binRoot = path.join(extensionContext.extensionPath, 'bin');
 	const exeName = process.platform === 'win32' ? 'guix_studio_cli.exe' : 'guix_studio_cli';
-	candidates.push(path.join(binRoot, exeName));
-	candidates.push(path.join(binRoot, process.platform, exeName));
-	candidates.push(path.join(binRoot, `${process.platform}-${process.arch}`, exeName));
+	candidates.push({ candidate: path.join(binRoot, exeName), source: 'bundled' });
+	candidates.push({ candidate: path.join(binRoot, process.platform, exeName), source: 'bundled' });
+	candidates.push({ candidate: path.join(binRoot, `${process.platform}-${process.arch}`, exeName), source: 'bundled' });
 
 	return candidates;
 }
@@ -182,27 +185,29 @@ async function findCliOnPath(): Promise<string | undefined> {
 	}
 }
 
-async function resolveCliPath(extensionContext: vscode.ExtensionContext): Promise<string> {
-	const candidates = findCliCandidatePaths(extensionContext);
+async function resolveCliPath(extensionContext: vscode.ExtensionContext): Promise<ResolvedCli> {
+	const candidates = findCliCandidateSpecs(extensionContext);
 
-	for (const candidate of candidates) {
+	for (const spec of candidates) {
+		const candidate = spec.candidate;
 		// If the user configured a bare name (no path separators), resolve via PATH.
 		if (!hasPathSeparator(candidate)) {
 			const fromPath = await findCliOnPath();
-			if (fromPath) return fromPath;
+			if (fromPath) {
+				return { path: fromPath, source: spec.source, detail: 'via PATH' };
+			}
 			continue;
 		}
 		try {
 			await vscode.workspace.fs.stat(vscode.Uri.file(candidate));
-			return candidate;
+			return { path: candidate, source: spec.source };
 		} catch {
 			// keep trying
 		}
 	}
 
-
 	const fromPath = await findCliOnPath();
-	if (fromPath) return fromPath;
+	if (fromPath) return { path: fromPath, source: 'path' };
 
 	throw new Error(
 		[
@@ -222,8 +227,9 @@ async function resolveCliPath(extensionContext: vscode.ExtensionContext): Promis
 let missingCliNotified = false;
 async function resolveCliPathSafe(
 	extensionContext: vscode.ExtensionContext,
-	interactive: boolean
-): Promise<string | undefined> {
+	interactive: boolean,
+	notifyOnMissing: boolean = true
+): Promise<ResolvedCli | undefined> {
 	try {
 		return await resolveCliPath(extensionContext);
 	} catch (err) {
@@ -233,7 +239,7 @@ async function resolveCliPathSafe(
 		output.appendLine(message);
 
 		if (!interactive) {
-			if (!missingCliNotified) {
+			if (notifyOnMissing && !missingCliNotified) {
 				missingCliNotified = true;
 				void vscode.window.showWarningMessage('GUIX Studio CLI not configured. Validation skipped.');
 			}
@@ -573,8 +579,9 @@ async function quickGenerateGxp(
 	output.show(true);
 	const genDiagnostics = getGenerateDiagnosticsCollection();
 
-	const cli = await resolveCliPathSafe(extensionContext, interactive);
-	if (!cli) return;
+	const resolvedCli = await resolveCliPathSafe(extensionContext, interactive);
+	if (!resolvedCli) return;
+	const cli = resolvedCli.path;
 
 	const outDir = resolveConfiguredOutputPath();
 	if (!outDir) {
@@ -587,7 +594,7 @@ async function quickGenerateGxp(
 	}
 	await ensureDirectoryExists(outDir);
 
-	output.appendLine(`Using CLI: ${cli}`);
+	output.appendLine(`Using CLI: ${cli} (${resolvedCli.source}${resolvedCli.detail ? `, ${resolvedCli.detail}` : ''})`);
 	output.appendLine(`Quick Generate: ${gxpPath}`);
 	output.appendLine(`Output folder: ${outDir}`);
 
@@ -676,8 +683,9 @@ async function migrateProject(
 	);
 	if (!choice) return;
 
-	const cli = await resolveCliPathSafe(extensionContext, true);
-	if (!cli) return;
+	const resolvedCli = await resolveCliPathSafe(extensionContext, true);
+	if (!resolvedCli) return;
+	const cli = resolvedCli.path;
 
 	let args: string[] = ['migrate', '-p', gxpPath, '--json'];
 	let outPath: string | undefined;
@@ -706,7 +714,7 @@ async function migrateProject(
 			cancellable: false,
 		},
 		async () => {
-			output.appendLine(`Using CLI: ${cli}`);
+			output.appendLine(`Using CLI: ${cli} (${resolvedCli.source}${resolvedCli.detail ? `, ${resolvedCli.detail}` : ''})`);
 			output.appendLine(`Project: ${gxpPath}`);
 			output.appendLine(`Mode: ${choice.value === 'inPlace' ? 'in-place' : 'copy'}`);
 
@@ -857,9 +865,10 @@ async function showProjectSummary(extensionContext: vscode.ExtensionContext, gxp
 	const output = getOutputChannel();
 	output.show(true);
 
-	const cli = await resolveCliPathSafe(extensionContext, true);
-	if (!cli) return;
-	output.appendLine(`Using CLI: ${cli}`);
+	const resolvedCli = await resolveCliPathSafe(extensionContext, true);
+	if (!resolvedCli) return;
+	const cli = resolvedCli.path;
+	output.appendLine(`Using CLI: ${cli} (${resolvedCli.source}${resolvedCli.detail ? `, ${resolvedCli.detail}` : ''})`);
 	output.appendLine(`Project: ${gxpPath}`);
 
 	const summary = await execFileJson<CliSummary>(cli, ['summary', '--project', gxpPath, '--json']);
@@ -893,9 +902,10 @@ async function validateProject(
 	const output = getOutputChannel();
 	output.show(true);
 
-	const cli = await resolveCliPathSafe(extensionContext, true);
-	if (!cli) return;
-	output.appendLine(`Using CLI: ${cli}`);
+	const resolvedCli = await resolveCliPathSafe(extensionContext, true);
+	if (!resolvedCli) return;
+	const cli = resolvedCli.path;
+	output.appendLine(`Using CLI: ${cli} (${resolvedCli.source}${resolvedCli.detail ? `, ${resolvedCli.detail}` : ''})`);
 	output.appendLine(`Validate: ${gxpPath}`);
 
 	let result: CliValidateResult;
@@ -959,9 +969,45 @@ export function activate(context: vscode.ExtensionContext): void {
 	const genDiagnostics = getGenerateDiagnosticsCollection();
 	context.subscriptions.push(genDiagnostics);
 
+	const cliStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+	cliStatus.command = 'guix.showCliInfo';
+	cliStatus.text = 'GUIX CLI: …';
+	cliStatus.tooltip = 'GUIX Studio CLI resolution';
+	cliStatus.show();
+	context.subscriptions.push(cliStatus);
+
+	const refreshCliStatus = async () => {
+		const resolvedCli = await resolveCliPathSafe(context, false, false);
+		if (!resolvedCli) {
+			cliStatus.text = 'GUIX CLI: missing';
+			cliStatus.color = new vscode.ThemeColor('statusBarItem.warningForeground');
+			cliStatus.tooltip = 'GUIX Studio CLI not found. Click for help.';
+			return;
+		}
+		const detail = `${resolvedCli.source}${resolvedCli.detail ? `, ${resolvedCli.detail}` : ''}`;
+		cliStatus.text = `GUIX CLI: ${resolvedCli.source}`;
+		cliStatus.color = undefined;
+		cliStatus.tooltip = `CLI: ${resolvedCli.path}\nSource: ${detail}\n\nClick to show details.`;
+	};
+
 	const projectsProvider = new GuixProjectsProvider();
 	vscode.window.registerTreeDataProvider('guixProjects', projectsProvider);
 	context.subscriptions.push(GxpDesignerEditorProvider.register(context));
+
+	// Best-effort refresh; avoid popping UI.
+	void refreshCliStatus();
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeConfiguration((e) => {
+			if (e.affectsConfiguration('guixStudio.cli.path') || e.affectsConfiguration('guixStudio.outputPath')) {
+				void refreshCliStatus();
+			}
+		})
+	);
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeWorkspaceFolders(() => {
+			void refreshCliStatus();
+		})
+	);
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('guix.selectCliPath', async () => {
@@ -976,6 +1022,39 @@ export function activate(context: vscode.ExtensionContext): void {
 			const chosen = picked[0].fsPath;
 			await vscode.workspace.getConfiguration('guixStudio').update('cli.path', chosen, vscode.ConfigurationTarget.Global);
 			void vscode.window.showInformationMessage(`GUIX CLI path set: ${path.basename(chosen)}`);
+			void refreshCliStatus();
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('guix.showCliInfo', async () => {
+			const output = getOutputChannel();
+			output.show(true);
+
+			const resolvedCli = await resolveCliPathSafe(context, true);
+			if (!resolvedCli) return;
+
+			const detail = `${resolvedCli.source}${resolvedCli.detail ? `, ${resolvedCli.detail}` : ''}`;
+			output.appendLine('---');
+			output.appendLine(`CLI: ${resolvedCli.path}`);
+			output.appendLine(`Source: ${detail}`);
+
+			const choice = await vscode.window.showInformationMessage(
+				`GUIX CLI: ${resolvedCli.path} (${detail})`,
+				'Copy Path',
+				'Select CLI Path',
+				'Build CLI',
+				'Open Settings'
+			);
+			if (choice === 'Copy Path') {
+				await vscode.env.clipboard.writeText(resolvedCli.path);
+			} else if (choice === 'Select CLI Path') {
+				await vscode.commands.executeCommand('guix.selectCliPath');
+			} else if (choice === 'Build CLI') {
+				await vscode.commands.executeCommand('guix.buildCli');
+			} else if (choice === 'Open Settings') {
+				await vscode.commands.executeCommand('workbench.action.openSettings', 'guixStudio.cli.path');
+			}
 		})
 	);
 
@@ -1060,12 +1139,13 @@ export function activate(context: vscode.ExtensionContext): void {
 
 			const validateOnSave = vscode.workspace.getConfiguration('guixStudio').get<boolean>('validateOnSave', true);
 			if (!validateOnSave) return;
-			const cli = await resolveCliPathSafe(context, false);
-			if (!cli) return;
+			const resolvedCli = await resolveCliPathSafe(context, false);
+			if (!resolvedCli) return;
+			const cli = resolvedCli.path;
 			// Call validate directly with the resolved CLI to avoid double resolution.
 			const output = getOutputChannel();
 			output.show(true);
-			output.appendLine(`Using CLI: ${cli}`);
+			output.appendLine(`Using CLI: ${cli} (${resolvedCli.source}${resolvedCli.detail ? `, ${resolvedCli.detail}` : ''})`);
 			output.appendLine(`Validate: ${doc.fileName}`);
 
 			let result: CliValidateResult;
@@ -1115,8 +1195,9 @@ export function activate(context: vscode.ExtensionContext): void {
 					cancellable: false,
 				},
 				async () => {
-					const cli = await resolveCliPathSafe(context, true);
-					if (!cli) return;
+					const resolvedCli = await resolveCliPathSafe(context, true);
+					if (!resolvedCli) return;
+					const cli = resolvedCli.path;
 
 					let defaultName = path.basename(input.path, path.extname(input.path));
 					if (input.kind === 'gxp') {
@@ -1146,7 +1227,7 @@ export function activate(context: vscode.ExtensionContext): void {
 						};
 					}
 
-					output.appendLine(`Using CLI: ${cli}`);
+					output.appendLine(`Using CLI: ${cli} (${resolvedCli.source}${resolvedCli.detail ? `, ${resolvedCli.detail}` : ''})`);
 					output.appendLine(`Input: ${input.path}`);
 					output.appendLine(`Output folder: ${outDir}`);
 					output.appendLine(

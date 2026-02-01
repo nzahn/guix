@@ -2,3 +2,8 @@
 **/*.map
 src/**
 .vscode/**
+
+# Keep the VSIX lean: include only runtime deps we actually use.
+node_modules/**
+!node_modules/fast-xml-parser/**
+!node_modules/strnum/**

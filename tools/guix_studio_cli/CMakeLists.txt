@@ -129,6 +129,44 @@ if (BUILD_TESTING)
   )
 
   add_test(
+    NAME guix_studio_cli_migrate_idempotent_guix_simple
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/samples/demo_guix_simple/guix_simple.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_idempotent
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/migrate_idempotent.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_migrate_idempotent_demo_guix_washing_machine
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/samples/demo_guix_washing_machine/demo_guix_washing_machine.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_idempotent
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/migrate_idempotent.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_migrate_golden_guix_simple
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/samples/demo_guix_simple/guix_simple.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_golden_migrate_guix_simple
+      -DGOLDEN_GXP=${CMAKE_CURRENT_LIST_DIR}/tests/golden_migration/guix_simple.migrated.gxp
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/compare_golden_migrate_gxp.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_migrate_golden_demo_guix_washing_machine
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/samples/demo_guix_washing_machine/demo_guix_washing_machine.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_golden_migrate_demo_guix_washing_machine
+      -DGOLDEN_GXP=${CMAKE_CURRENT_LIST_DIR}/tests/golden_migration/demo_guix_washing_machine.migrated.gxp
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/compare_golden_migrate_gxp.cmake
+  )
+
+  add_test(
     NAME guix_studio_cli_export_resource_xml_golden_demo_guix_binres_standalone
     COMMAND ${CMAKE_COMMAND}
       -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>

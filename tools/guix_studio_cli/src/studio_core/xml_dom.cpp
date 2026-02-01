@@ -295,6 +295,15 @@ static void write_indent(std::string& out, int indentSpaces, int level) {
     out.append(static_cast<size_t>(indentSpaces * level), ' ');
 }
 
+static bool is_ws_only(std::string_view s) {
+    for (char c : s) {
+        if (!(c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v')) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static void write_node(std::string& out, const XmlNode& node, const XmlWriteOptions& opts, int level) {
     write_indent(out, opts.indent_spaces, level);
     out += "<";
@@ -302,7 +311,7 @@ static void write_node(std::string& out, const XmlNode& node, const XmlWriteOpti
     out += ">";
 
     const bool has_children = !node.children.empty();
-    const bool has_text = !node.text.empty();
+    const bool has_text = !node.text.empty() && !is_ws_only(node.text);
 
     if (has_children) {
         out += "\n";

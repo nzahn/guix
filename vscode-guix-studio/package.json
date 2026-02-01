@@ -4,23 +4,16 @@
   "description": "Preview VS Code extension scaffolding for GUIX Studio (.gxp) projects.",
   "version": "0.0.1",
   "publisher": "eclipse-threadx",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eclipse-threadx/guix.git"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
   "activationEvents": [
     "onLanguage:guix-gxp",
-    "workspaceContains:**/*.gxp",
-    "onCommand:guix.openDesigner",
-    "onCommand:guix.openProject",
-    "onCommand:guix.projectSummary",
-    "onCommand:guix.validateProject",
-    "onCommand:guix.generateOutputs",
-    "onCommand:guix.quickGenerateOutputs",
-    "onCommand:guix.migrateProject",
-    "onCommand:guix.refreshProjects",
-    "onCommand:guix.selectCliPath",
-    "onCommand:guix.addVsCodeTasks",
-    "onCommand:guix.buildCli"
+    "workspaceContains:**/*.gxp"
   ],
   "categories": [
     "Other"
@@ -63,6 +56,10 @@
       {
         "command": "guix.selectCliPath",
         "title": "GUIX: Select CLI Path"
+      },
+      {
+        "command": "guix.showCliInfo",
+        "title": "GUIX: Show CLI Info"
       },
       {
         "command": "guix.addVsCodeTasks",

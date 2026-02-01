@@ -143,6 +143,7 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
   - [x] Option: build-from-source in user workspace (last resort) via “GUIX: Build CLI (CMake)” command
 - [x] Provide “Generate” task UI:
 - [x] Provide “Generate” task UX improvements:
+  - [x] status bar shows resolved CLI source (click for details)
   - [x] configurable default output dir (`guixStudio.outputPath`)
   - [x] quick generate command for active `.gxp`
   - [x] show logs in VS Code Output Channel
@@ -185,15 +186,20 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
   - [ ] In CI, run the new CLI and compare generated outputs (normalized whitespace)
 - [x] Golden output comparison (Phase 1): export-resource-xml matches committed fixtures for 4 projects
 - [ ] Unit tests for `.gxp` parsing and schema migration
+  - [x] Migration is idempotent (migrate twice yields identical output)
+  - [x] Golden migration output comparison (2 projects)
 - [ ] Extension smoke tests (command execution + diagnostics)
   - [x] Smoke script: `npm run -s smoke:gxp` (parses 2-theme + 5-theme `.gxp` fixtures)
 
 ## CI / packaging
 - [x] Add GitHub Actions workflow to build the extension (TypeScript) and the CLI (macOS/Linux/Windows)
+- [x] Run extension compile + smoke on macOS/Linux/Windows
 - [ ] Decide release packaging:
   - [ ] VSIX includes platform binaries (bigger but easy)
   - [ ] Separate downloads + extension fetches on first run
 - [x] CI produces a VSIX artifact that bundles per-platform `guix_studio_cli` binaries (for evaluation)
+  - [x] VSIX packaging is non-interactive (extension includes `repository` + `LICENSE.txt`)
+  - [x] VSIX keeps dependencies minimal (whitelists `fast-xml-parser` + `strnum`)
 
 ## Open questions (need answers to plan accurately)
 - Do we want “auto-migrate on save” or “explicit migrate command only”?
