@@ -25,11 +25,21 @@ cmake --build build/guix_studio_cli
 ./build/guix_studio_cli/guix_studio_cli generate \
 	--project samples/demo_guix_simple/guix_simple.gxp \
 	--output_path /tmp/guix_out
+
+# Phase 1 legacy-ish flags (stub artifacts)
+./build/guix_studio_cli/guix_studio_cli generate \
+	-p samples/demo_guix_simple/guix_simple.gxp \
+	--output_path /tmp/guix_out \
+	-r my_resources.c \
+	-s my_spec.txt \
+	-b --big_endian --no_res_header \
+	--json
 ```
 
 ## Scope
 
 Phase 1 supports best-effort summaries, minimal validation, and a minimal generator (`generate`) that exports a resource-project XML.
+`generate` also accepts legacy-ish flags (`-r/-s/-b/-x`) but currently writes stub placeholder outputs for resource/spec/binary.
 Later phases will implement output generation compatible with legacy Studio (resource/spec/bin/srec/standalone binres).
 
 Note: legacy Studio expects the resource-project XML `<version>` to be at least 56. The CLI clamps the exported resource XML version to `>= 56` even if the `.gxp` has an older `<project_version>` (e.g. 55).

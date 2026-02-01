@@ -1,5 +1,30 @@
 # GUIX Studio → VS Code Extension (Plan / TODO)
 
+## How to use this document
+- Treat each milestone (M0–M5) as a “chapter”. Each chapter has a **Definition of done** and a checklist.
+- Keep work incremental: update checkboxes as you land changes.
+- Prefer adding links to concrete artifacts (code, tests, fixtures) so this stays executable.
+
+## Chapter template (copy/paste)
+Use this format when adding new chapters or expanding an existing one:
+
+### Mx — <Title>
+**Goal:** <what this chapter achieves>
+
+**Definition of done:**
+- [ ] <user-visible behavior / verifiable outcome>
+- [ ] <tests or smoke checks run>
+- [ ] <docs updated>
+
+**Tasks:**
+- [ ] <task>
+- [ ] <task>
+
+## Current status (as of this branch)
+- CLI exists and runs on macOS: [tools/guix_studio_cli/README.md](tools/guix_studio_cli/README.md)
+- VS Code extension scaffolding exists and compiles: [vscode-guix-studio/README.md](vscode-guix-studio/README.md)
+- Commands implemented: Open Project, Project Summary, Generate Outputs, Validate Project
+
 ## Goal
 Replace the legacy Windows/MFC GUIX Studio app in `guix_studio/` with a cross-platform VS Code extension that can:
 - Open and edit GUIX Studio project files (`.gxp`) and resource-project XML.
@@ -39,34 +64,50 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
 ## Milestones
 
 ### M0 — Discovery + decisions (1–2 weeks)
-- [ ] Inventory Studio file formats + schemas
-  - [ ] Identify required `.gxp` tags and versioning strategy (`PROJECT_VERSION`)
-  - [ ] Identify resource-project XML format (written by `studiox_project::GenerateResourceXml()`)
-- [ ] Pick MVP fixture projects (checked into repo) and lock their expected generator outputs
-  - [ ] `samples/demo_guix_simple/guix_simple.gxp` (simple baseline)
-  - [ ] `samples/demo_guix_washing_machine/demo_guix_washing_machine.gxp` (larger UI)
-  - [ ] `tutorials/demo_guix_binres_standalone/demo_guix_binres_standalone.gxp` (standalone binres path)
-  - [ ] `test/example_internal/all_widgets_5_3_3/all_widgets_5_3_3.gxp` (older project version for compatibility)
-- [ ] Decide the architecture for reuse vs rewrite:
-  - [ ] Option A: Extract portable C++ “studio-core” library + CLI (recommended)
-  - [ ] Option B: Full TypeScript reimplementation of parser + generators
-  - [ ] Option C: Node native addon / WASM binding to existing code
-- [ ] Write an ADR (architecture decision record) documenting the choice, with pros/cons and constraints.
+**Goal:** lock scope, fixtures, and architectural decisions so implementation doesn’t churn.
+
+**Definition of done:**
+- [x] ADR written and committed
+- [x] MVP fixtures chosen and recorded
+
+**Tasks:**
+- [x] Inventory Studio file formats + schemas
+  - [x] Identify required `.gxp` tags and versioning strategy (`PROJECT_VERSION`)
+  - [x] Identify resource-project XML format (written by `studiox_project::GenerateResourceXml()`)
+- [x] Pick MVP fixture projects (checked into repo)
+  - [x] [samples/demo_guix_simple/guix_simple.gxp](samples/demo_guix_simple/guix_simple.gxp)
+  - [x] [samples/demo_guix_washing_machine/demo_guix_washing_machine.gxp](samples/demo_guix_washing_machine/demo_guix_washing_machine.gxp)
+  - [x] [tutorials/demo_guix_binres_standalone/demo_guix_binres_standalone.gxp](tutorials/demo_guix_binres_standalone/demo_guix_binres_standalone.gxp)
+  - [x] [test/example_internal/all_widgets_5_3_3/all_widgets_5_3_3.gxp](test/example_internal/all_widgets_5_3_3/all_widgets_5_3_3.gxp)
+- [x] Decide the architecture for reuse vs rewrite
+- [x] Write an ADR documenting the choice: [docs/adr/0001-guix-studio-vscode-extension-architecture.md](docs/adr/0001-guix-studio-vscode-extension-architecture.md)
 
 ### M1 — Repo scaffolding (VS Code extension skeleton) (1 week)
-- [ ] Create new extension package folder (proposed: `vscode-guix-studio/`)
-- [ ] Add `package.json`, `tsconfig.json`, build scripts, and minimal activation
-- [ ] Define initial commands:
-  - [ ] `GUix: Open Project (.gxp)`
-  - [ ] `GUix: Generate Outputs` (calls CLI)
-  - [ ] `GUix: Validate Project` (schema/consistency checks)
-- [ ] Add a basic “Project Explorer” view container
-- [ ] Register file associations / custom editor contribution for `.gxp`
+**Goal:** extension exists, compiles, and can invoke the CLI.
+
+**Definition of done:**
+- [x] Extension compiles (`npm run compile`)
+- [x] Commands are registered and usable
+
+**Tasks:**
+- [x] Create new extension package folder: [vscode-guix-studio/](vscode-guix-studio/)
+- [x] Add `package.json`, `tsconfig.json`, build scripts
+- [x] Define initial commands:
+  - [x] Open Project (.gxp)
+  - [x] Generate Outputs (calls CLI)
+  - [x] Validate Project (diagnostics)
+- [x] Add a basic “Project Explorer” view container (GUIX Projects tree)
+- [ ] Register custom editor contribution for `.gxp` (planned for M4)
 
 ### M2 — Cross-platform generator CLI (2–6 weeks)
 **Goal:** a headless tool that reproduces Studio generation outputs.
 
-- [ ] Create a new CMake target for a console app (proposed: `tools/guix_studio_cli/`)
+**Definition of done (Phase 1 subset):**
+- [x] CLI builds with CMake
+- [x] CLI can summarize/validate `.gxp`
+- [x] CLI supports a Phase-1 `generate` flow with stable JSON output contract
+
+- [x] Create a new CMake target for a console app: [tools/guix_studio_cli/](tools/guix_studio_cli/)
 - [ ] Refactor Studio code into layers:
   - [ ] `studio_core` (portable) — project model + XML read/write + generators
   - [ ] `studio_win` (legacy) — MFC UI that calls `studio_core`
@@ -87,12 +128,15 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
   - [ ] Round-trip tests (load + save yields semantically equivalent XML)
 - [ ] Backward compatibility layer:
   - [ ] Detect `<project_version>` and migrate to latest schema in-memory
-  - [ ] Maintain a migration test corpus (fixtures above)
-  - [ ] Add “save as latest” option (explicit, not silent)
+  - [x] Maintain a migration test corpus (fixtures above)
+    - [x] CLI migration tests cover `guix_simple.gxp` and `demo_guix_washing_machine.gxp`
+  - [x] Add “save as latest” option (explicit, not silent)
 - [ ] Implement/port resource generation and binary resource generation
   - [ ] Verify outputs match Studio for sample projects under `samples/` and `tutorials/`
 
 ### M3 — Extension integrates CLI (1–2 weeks)
+- **Goal:** smooth UX around invoking the CLI (discoverability, logs, diagnostics).
+
 - [ ] Extension downloads/locates the CLI binary per platform
   - [ ] Option: ship prebuilt binaries as extension assets
   - [ ] Option: build-from-source in user workspace (last resort)

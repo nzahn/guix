@@ -7,6 +7,13 @@
 #include <string>
 #include <vector>
 
+#include "studio_core/gxp_migrate.h"
+#include "studio_core/gxp_project.h"
+#include "studio_core/resource_project.h"
+#include "studio_core/resource_xml_export.h"
+#include "studio_core/xml_dom.h"
+#include "studio_core/xml_writer.h"
+
 namespace {
 
 constexpr const char* kVersion = "0.1.0";
@@ -20,44 +27,17 @@ struct ProjectHeader {
 
 constexpr int kMinimumResourceXmlVersion = 56; // PROJECT_VERSION_INITIAL_RESOURCE_XML
 
-std::string read_file_to_string(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
-        throw std::runtime_error("Unable to open file: " + path);
-    }
-    std::ostringstream out;
-    out << in.rdbuf();
-    return out.str();
-}
-
-std::optional<std::string> extract_xml_tag_value(const std::string& xml, const std::string& tag) {
-    const std::string open = "<" + tag + ">";
-    const std::string close = "</" + tag + ">";
-
-    const auto open_pos = xml.find(open);
-    if (open_pos == std::string::npos) {
-        return std::nullopt;
-    }
-
-    const auto start = open_pos + open.size();
-    const auto close_pos = xml.find(close, start);
-    if (close_pos == std::string::npos) {
-        return std::nullopt;
-    }
-
-    return xml.substr(start, close_pos - start);
-}
-
-ProjectHeader parse_project_header_best_effort(const std::string& xml) {
+ProjectHeader parse_project_header(const std::string& gxp_path) {
     ProjectHeader header;
+    const auto parsed = studio_core::parse_gxp_header(gxp_path);
+    if (!parsed.ok) {
+        return header;
+    }
 
-    // Best-effort extraction for Phase 1 scaffolding.
-    // For full fidelity/migrations we will switch to a real XML parser.
-    header.project_version = extract_xml_tag_value(xml, "project_version");
-    header.guix_version = extract_xml_tag_value(xml, "guix_version");
-    header.studio_version = extract_xml_tag_value(xml, "studio_version");
-    header.project_name = extract_xml_tag_value(xml, "project_name");
-
+    if (parsed.header.project_version) header.project_version = std::to_string(*parsed.header.project_version);
+    if (parsed.header.guix_version) header.guix_version = std::to_string(*parsed.header.guix_version);
+    if (parsed.header.studio_version) header.studio_version = std::to_string(*parsed.header.studio_version);
+    if (parsed.header.project_name) header.project_name = *parsed.header.project_name;
     return header;
 }
 
@@ -102,6 +82,9 @@ void print_usage(std::ostream& os) {
     os << "  guix_studio_cli help\n";
     os << "  guix_studio_cli summary --project <path.gxp> [--json]\n";
     os << "  guix_studio_cli validate --project <path.gxp> [--json]\n\n";
+
+    os << "  guix_studio_cli migrate --project <path.gxp> [--output <path.gxp> | --in-place] [--json]\n\n";
+
     os << "  guix_studio_cli export-resource-xml --project <path.gxp> [--output_path <dir>] [--json]\n";
     os << "  guix_studio_cli generate --project <path.gxp> [--output_path <dir>] [--json]\n\n";
     os << "Notes:\n";
@@ -126,6 +109,116 @@ bool has_flag(const std::vector<std::string>& args, const std::string& flag) {
     return false;
 }
 
+std::optional<std::string> arg_value_any(const std::vector<std::string>& args, const std::vector<std::string>& flags) {
+    for (const auto& f : flags) {
+        auto v = arg_value(args, f);
+        if (v) {
+            return v;
+        }
+    }
+    return std::nullopt;
+}
+
+bool has_flag_any(const std::vector<std::string>& args, const std::vector<std::string>& flags) {
+    for (const auto& f : flags) {
+        if (has_flag(args, f)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int cmd_migrate(const std::vector<std::string>& args) {
+    const auto project = arg_value_any(args, {"--project", "-p"});
+    if (!project) {
+        std::cerr << "Missing required flag: --project/-p\n";
+        return 2;
+    }
+
+    const bool json = has_flag_any(args, {"--json"});
+    const bool in_place = has_flag_any(args, {"--in-place"});
+    const auto output_arg = arg_value_any(args, {"--output"});
+
+    if (in_place && output_arg) {
+        std::cerr << "Use only one of --output or --in-place\n";
+        return 2;
+    }
+
+    std::filesystem::path out_path;
+    if (in_place) {
+        out_path = std::filesystem::path(*project);
+    } else if (output_arg) {
+        out_path = std::filesystem::path(*output_arg);
+    } else {
+        std::filesystem::path in_path(*project);
+        out_path = in_path;
+        out_path.replace_filename(in_path.stem().string() + ".migrated" + in_path.extension().string());
+    }
+
+    auto parsed = studio_core::parse_xml_file(*project);
+    if (!parsed.ok) {
+        if (json) {
+            std::cout << "{\"ok\":false,\"error\":\"" << json_escape(parsed.error) << "\"}\n";
+            return 1;
+        }
+        std::cerr << parsed.error << "\n";
+        return 1;
+    }
+
+    auto mig = studio_core::migrate_gxp_to_latest(parsed.doc);
+    if (!mig.ok) {
+        if (json) {
+            std::cout << "{\"ok\":false,\"error\":\"" << json_escape(mig.error) << "\"}";
+            std::cout << "\n";
+            return 1;
+        }
+        std::cerr << mig.error << "\n";
+        return 1;
+    }
+
+    std::string err;
+    if (!studio_core::write_xml_file(out_path.string(), parsed.doc, &err)) {
+        if (json) {
+            std::cout << "{\"ok\":false,\"error\":\"" << json_escape(err) << "\"}\n";
+            return 2;
+        }
+        std::cerr << err << "\n";
+        return 2;
+    }
+
+    if (json) {
+        std::cout << "{\"ok\":true";
+        std::cout << ",\"project\":\"" << json_escape(*project) << "\"";
+        std::cout << ",\"output\":\"" << json_escape(out_path.string()) << "\"";
+
+        std::cout << ",\"warnings\":[";
+        for (size_t i = 0; i < mig.warnings.size(); ++i) {
+            if (i) std::cout << ",";
+            std::cout << "\"" << json_escape(mig.warnings[i]) << "\"";
+        }
+        std::cout << "]";
+
+        std::cout << ",\"changes\":[";
+        for (size_t i = 0; i < mig.changes.size(); ++i) {
+            if (i) std::cout << ",";
+            std::cout << "\"" << json_escape(mig.changes[i]) << "\"";
+        }
+        std::cout << "]";
+
+        std::cout << "}\n";
+        return 0;
+    }
+
+    std::cout << "Wrote migrated project: " << out_path.string() << "\n";
+    for (const auto& c : mig.changes) {
+        std::cout << "  change: " << c << "\n";
+    }
+    for (const auto& w : mig.warnings) {
+        std::cout << "  warning: " << w << "\n";
+    }
+    return 0;
+}
+
 std::filesystem::path default_output_dir_for_project(const std::filesystem::path& project_path) {
     auto parent = project_path.parent_path();
     if (parent.empty()) {
@@ -135,24 +228,16 @@ std::filesystem::path default_output_dir_for_project(const std::filesystem::path
 }
 
 int cmd_export_resource_xml(const std::vector<std::string>& args) {
-    const auto project = arg_value(args, "--project");
+    const auto project = arg_value_any(args, {"--project", "-p"});
     if (!project) {
-        std::cerr << "Missing required flag: --project\n";
+        std::cerr << "Missing required flag: --project/-p\n";
         return 2;
     }
 
     const auto output_path_arg = arg_value(args, "--output_path");
     const bool json = has_flag(args, "--json");
 
-    std::string xml;
-    try {
-        xml = read_file_to_string(*project);
-    } catch (const std::exception& ex) {
-        std::cerr << ex.what() << "\n";
-        return 2;
-    }
-
-    const auto header = parse_project_header_best_effort(xml);
+    const auto header = parse_project_header(*project);
     if (!header.project_name || header.project_name->empty()) {
         std::cerr << "Missing <project_name>\n";
         return 1;
@@ -171,48 +256,28 @@ int cmd_export_resource_xml(const std::vector<std::string>& args) {
 
     const std::filesystem::path out_file = out_dir / (header.project_name.value() + ".resource.xml");
 
-    std::ofstream out(out_file, std::ios::binary);
-    if (!out) {
-        std::cerr << "Unable to open output file: " << out_file.string() << "\n";
-        return 2;
+    const auto exported = studio_core::export_resource_xml_from_gxp(*project, out_file.string());
+    if (!exported.ok) {
+        if (json) {
+            std::cout << "{\"ok\":false,\"error\":\"" << json_escape(exported.error) << "\"}";
+            std::cout << "\n";
+            return 1;
+        }
+        std::cerr << exported.error << "\n";
+        return 1;
     }
-
-    // Minimal resource-project XML; mirrors the legacy doc type/name and key header fields.
-    // NOTE: Resource-XML <version> must be >= PROJECT_VERSION_INITIAL_RESOURCE_XML (56).
-    const auto project_version_int = parse_int(header.project_version).value_or(0);
-    const int resource_xml_version = std::max(kMinimumResourceXmlVersion, project_version_int);
-
-    out << "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
-    out << "<!DOCTYPE GUIX_Studio_Resource>\n";
-    out << "<resource_project>\n";
-
-    out << "  <header>\n";
-    // In legacy Studio, <name> is the user-chosen base filename (without extension).
-    out << "    <name>" << header.project_name.value() << "</name>\n";
-    out << "    <version>" << resource_xml_version << "</version>\n";
-    out << "    <converter>GUIX Studio</converter>\n";
-    if (header.studio_version) {
-        out << "    <studio_version>" << header.studio_version.value() << "</studio_version>\n";
-    }
-    if (header.guix_version) {
-        out << "    <guix_version>" << header.guix_version.value() << "</guix_version>\n";
-    }
-    // These exist in legacy output; Phase 1 doesn't parse them from .gxp yet.
-    out << "    <target_cpu></target_cpu>\n";
-    out << "    <target_tools></target_tools>\n";
-    out << "    <dave2d_graph_accelerator>false</dave2d_graph_accelerator>\n";
-    out << "  </header>\n";
-
-    // Legacy output includes display_info (needed by the binary resource pipeline).
-    out << "  <display_info>\n";
-    out << "    <display_color_format></display_color_format>\n";
-    out << "    <rotation_angle></rotation_angle>\n";
-    out << "  </display_info>\n";
-
-    out << "</resource_project>\n";
 
     if (json) {
-        std::cout << "{\"ok\":true,\"resource_xml\":\"" << json_escape(out_file.string()) << "\"}\n";
+        std::cout << "{\"ok\":true,\"resource_xml\":\"" << json_escape(out_file.string()) << "\"";
+        std::cout << ",\"pixelmaps\":" << exported.pixelmap_count;
+        std::cout << ",\"fonts\":" << exported.font_count;
+        std::cout << ",\"warnings\":[";
+        for (size_t i = 0; i < exported.warnings.size(); ++i) {
+            if (i) std::cout << ",";
+            std::cout << "\"" << json_escape(exported.warnings[i]) << "\"";
+        }
+        std::cout << "]}";
+        std::cout << "\n";
         return 0;
     }
 
@@ -221,27 +286,222 @@ int cmd_export_resource_xml(const std::vector<std::string>& args) {
 }
 
 int cmd_generate(const std::vector<std::string>& args) {
-    // Phase 1: generate only exports resource-project XML.
-    // Future: add resource/spec/bin/srec outputs compatible with legacy Studio.
-    return cmd_export_resource_xml(args);
+    // Phase 1: implement legacy-ish CLI semantics but generate stub artifacts.
+    // This lets the VS Code extension build UX without waiting for full generator parity.
+
+    const auto project = arg_value_any(args, {"--project", "-p"});
+    const auto xml_in = arg_value_any(args, {"--xml", "-x"});
+    const auto output_path_arg = arg_value_any(args, {"--output_path"});
+    const bool json = has_flag_any(args, {"--json"});
+
+    const auto resource_out = arg_value_any(args, {"--resource", "-r"});
+    const auto spec_out = arg_value_any(args, {"--specification", "-s"});
+    const bool binary = has_flag_any(args, {"--binary", "-b"});
+    const bool big_endian = has_flag_any(args, {"--big_endian"});
+    const bool no_res_header = has_flag_any(args, {"--no_res_header"});
+
+    if (!project && !xml_in) {
+        std::cerr << "Missing required flag: --project/-p or --xml/-x\n";
+        return 2;
+    }
+
+    // Resolve output dir.
+    std::filesystem::path out_dir;
+    if (output_path_arg) {
+        out_dir = std::filesystem::path(*output_path_arg);
+    } else if (project) {
+        out_dir = default_output_dir_for_project(std::filesystem::path(*project));
+    } else {
+        out_dir = std::filesystem::current_path();
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(out_dir, ec);
+    if (ec) {
+        std::cerr << "Failed to create output directory: " << out_dir.string() << "\n";
+        return 2;
+    }
+
+    // Determine project name if possible.
+    std::optional<std::string> project_name;
+    std::optional<std::string> project_version;
+    std::optional<std::string> guix_version;
+    std::optional<std::string> studio_version;
+
+    if (project) {
+        const auto header = parse_project_header(*project);
+        project_name = header.project_name;
+        project_version = header.project_version;
+        guix_version = header.guix_version;
+        studio_version = header.studio_version;
+    }
+
+    if (!project_name || project_name->empty()) {
+        // Fall back to filename base.
+        if (project) {
+            project_name = std::filesystem::path(*project).stem().string();
+        } else if (xml_in) {
+            project_name = std::filesystem::path(*xml_in).stem().string();
+        }
+    }
+
+    if (!project_name || project_name->empty()) {
+        std::cerr << "Unable to determine project name\n";
+        return 1;
+    }
+
+    // Phase 1 default behavior: if no specific outputs requested, behave like before and emit resource XML.
+    const bool any_requested = (resource_out.has_value() || spec_out.has_value() || binary);
+
+    struct PlannedOutput {
+        std::string kind;
+        std::filesystem::path path;
+    };
+    std::vector<PlannedOutput> outputs;
+
+    std::filesystem::path resource_xml_path;
+    if (!xml_in) {
+        // We need a resource XML (either explicitly requested or as input for binary generation, or for backward-compatible behavior).
+        const std::filesystem::path out_file = out_dir / (*project_name + ".resource.xml");
+        if (project) {
+            const auto exported = studio_core::export_resource_xml_from_gxp(*project, out_file.string());
+            if (!exported.ok) {
+                std::cerr << exported.error << "\n";
+                return 1;
+            }
+        } else {
+            // No .gxp available; fall back to a minimal resource XML.
+            std::string err;
+            studio_core::XmlWriter writer;
+            if (!writer.openFile(out_file.string(), &err)) {
+                std::cerr << err << "\n";
+                return 2;
+            }
+            writer.writeHeader("GUIX_Studio_Resource");
+            writer.openTag("resource_project");
+            writer.openTag("header");
+            writer.writeString("name", *project_name);
+            writer.writeInt("version", kMinimumResourceXmlVersion);
+            writer.writeString("converter", "GUIX Studio");
+            writer.writeString("target_cpu", "Generic");
+            writer.writeString("target_tools", "Generic");
+            writer.writeBool("dave2d_graph_accelerator", false);
+            writer.closeTag("header");
+            writer.openTag("display_info");
+            writer.writeString("display_color_format", "GX_COLOR_FORMAT_565RGB");
+            writer.writeString("rotation_angle", "None");
+            writer.closeTag("display_info");
+            writer.closeTag("resource_project");
+            writer.closeFile();
+        }
+
+        resource_xml_path = out_file;
+    } else {
+        // Validate the input is a resource project like legacy Studio.
+        const auto rp = studio_core::parse_resource_project_header(*xml_in);
+        if (!rp.ok) {
+            std::cerr << rp.error << "\n";
+            return 1;
+        }
+        if (!rp.header.version || *rp.header.version < kMinimumResourceXmlVersion) {
+            std::cerr << "Invalid resource project version\n";
+            return 1;
+        }
+        if (!rp.header.converter || *rp.header.converter != "GUIX Studio") {
+            std::cerr << "Unknown converter\n";
+            return 1;
+        }
+        resource_xml_path = std::filesystem::path(*xml_in);
+    }
+
+    // Back-compat: always report resource_xml when we created/used one.
+    if (!resource_xml_path.empty()) {
+        outputs.push_back({"resource_xml", resource_xml_path});
+    }
+
+    // Resource/spec outputs are file-path arguments in legacy Studio.
+    if (resource_out) {
+        std::filesystem::path p(*resource_out);
+        if (p.is_relative()) {
+            p = out_dir / p;
+        }
+        outputs.push_back({"resource_c", p});
+    } else if (!any_requested) {
+        // If user didn't request anything, keep Phase 1 behavior (resource XML only).
+    }
+
+    if (spec_out) {
+        std::filesystem::path p(*spec_out);
+        if (p.is_relative()) {
+            p = out_dir / p;
+        }
+        outputs.push_back({"specification", p});
+    }
+
+    if (binary) {
+        std::filesystem::path p = out_dir / (*project_name + ".bin");
+        outputs.push_back({"binary", p});
+    }
+
+    // Emit stub files for requested outputs.
+    for (const auto& o : outputs) {
+        if (o.kind == "resource_xml") {
+            continue; // already written or provided
+        }
+        std::ofstream f(o.path, std::ios::binary);
+        if (!f) {
+            std::cerr << "Unable to open output file: " << o.path.string() << "\n";
+            return 2;
+        }
+
+        if (o.kind == "resource_c") {
+            f << "/* Phase 1 stub: resource C output not implemented yet. */\n";
+            f << "/* Project: " << *project_name << " */\n";
+            f << "/* Generated from: " << (project ? *project : resource_xml_path.string()) << " */\n";
+        } else if (o.kind == "specification") {
+            f << "# Phase 1 stub: specification output not implemented yet\n";
+            f << "project: " << *project_name << "\n";
+        } else if (o.kind == "binary") {
+            // A deterministic placeholder. Later phases will generate real binres.
+            f << "GUIXSTUB";
+            f << "\n";
+            f << "big_endian=" << (big_endian ? "true" : "false") << "\n";
+            f << "no_res_header=" << (no_res_header ? "true" : "false") << "\n";
+            f << "xml=" << resource_xml_path.string() << "\n";
+        }
+    }
+
+    if (json) {
+        std::cout << "{\"ok\":true";
+        std::cout << ",\"project_name\":\"" << json_escape(*project_name) << "\"";
+        if (!resource_xml_path.empty()) {
+            std::cout << ",\"resource_xml\":\"" << json_escape(resource_xml_path.string()) << "\"";
+        }
+        std::cout << ",\"outputs\":[";
+        for (size_t i = 0; i < outputs.size(); ++i) {
+            if (i) std::cout << ",";
+            std::cout << "{\"kind\":\"" << json_escape(outputs[i].kind) << "\",\"path\":\"";
+            std::cout << json_escape(outputs[i].path.string()) << "\"}";
+        }
+        std::cout << "]}";
+        std::cout << "\n";
+        return 0;
+    }
+
+    for (const auto& o : outputs) {
+        std::cout << "Wrote " << o.kind << ": " << o.path.string() << "\n";
+    }
+    return 0;
 }
 
 int cmd_summary(const std::vector<std::string>& args) {
-    const auto project = arg_value(args, "--project");
+    const auto project = arg_value_any(args, {"--project", "-p"});
     if (!project) {
-        std::cerr << "Missing required flag: --project\n";
+        std::cerr << "Missing required flag: --project/-p\n";
         return 2;
     }
 
-    std::string xml;
-    try {
-        xml = read_file_to_string(*project);
-    } catch (const std::exception& ex) {
-        std::cerr << ex.what() << "\n";
-        return 2;
-    }
-
-    const auto header = parse_project_header_best_effort(xml);
+    const auto header = parse_project_header(*project);
     const bool json = has_flag(args, "--json");
 
     if (json) {
@@ -276,9 +536,9 @@ int cmd_summary(const std::vector<std::string>& args) {
 }
 
 int cmd_validate(const std::vector<std::string>& args) {
-    const auto project = arg_value(args, "--project");
+    const auto project = arg_value_any(args, {"--project", "-p"});
     if (!project) {
-        std::cerr << "Missing required flag: --project\n";
+        std::cerr << "Missing required flag: --project/-p\n";
         return 2;
     }
 
@@ -298,44 +558,69 @@ int cmd_validate(const std::vector<std::string>& args) {
         std::cout << "]}\n";
     };
 
-    std::string xml;
-    try {
-        xml = read_file_to_string(*project);
-    } catch (const std::exception& ex) {
-        if (json) {
-            emit_json(false, {ex.what()}, {});
-            return 2;
-        }
-        std::cerr << ex.what() << "\n";
-        return 2;
-    }
-
-    // Very small validation for Phase 1.
-    // Later: real XML parse + schema version checks + migration path.
+    // Small but real validation: parse XML, check basic schema shape, and
+    // preview in-memory migration to latest (explicit on-disk migration is a
+    // separate command).
     std::vector<std::string> errors;
     std::vector<std::string> warnings;
 
-    if (xml.find("<!DOCTYPE GUIX_Studio_Project") == std::string::npos) {
-        errors.emplace_back("Not a GUIX_Studio_Project (.gxp) file (missing doctype)");
-    }
+    auto parsed = studio_core::parse_xml_file(*project);
+    if (!parsed.ok) {
+        errors.emplace_back(parsed.error);
+    } else {
+        if (parsed.doc.doctype.find("GUIX_Studio_Project") == std::string::npos) {
+            errors.emplace_back("Not a GUIX_Studio_Project (.gxp) file (missing/unknown doctype)");
+        }
 
-    const auto header = parse_project_header_best_effort(xml);
-    if (!header.project_name || header.project_name->empty()) {
-        errors.emplace_back("Missing <project_name>");
-    }
+        if (parsed.doc.root.name != "project") {
+            errors.emplace_back("Root element is not <project>");
+        } else {
+            const auto* header_node = parsed.doc.root.firstChild("header");
+            if (!header_node) {
+                errors.emplace_back("Missing <header>");
+            } else {
+                const auto project_name = studio_core::node_text(*header_node, "project_name");
+                if (!project_name || project_name->empty()) {
+                    errors.emplace_back("Missing <project_name>");
+                }
 
-    if (!header.project_version || header.project_version->empty()) {
-        errors.emplace_back("Missing <project_version>");
-    } else if (!parse_int(header.project_version)) {
-        warnings.emplace_back("Non-integer <project_version>");
-    }
+                const auto project_version = studio_core::node_text(*header_node, "project_version");
+                std::optional<int> project_version_int;
+                if (!project_version || project_version->empty()) {
+                    errors.emplace_back("Missing <project_version>");
+                } else {
+                    project_version_int = parse_int(project_version);
+                    if (!project_version_int) {
+                        warnings.emplace_back("Non-integer <project_version>");
+                    } else if (*project_version_int < studio_core::kLatestProjectVersion) {
+                        warnings.emplace_back("Project version is older than latest; run 'migrate' to update on disk");
+                    }
+                }
 
-    if (header.guix_version && !header.guix_version->empty() && !parse_int(header.guix_version)) {
-        warnings.emplace_back("Non-integer <guix_version>");
-    }
+                const auto guix_version = studio_core::node_text(*header_node, "guix_version");
+                if (guix_version && !guix_version->empty() && !parse_int(guix_version)) {
+                    warnings.emplace_back("Non-integer <guix_version>");
+                }
 
-    if (header.studio_version && !header.studio_version->empty() && !parse_int(header.studio_version)) {
-        warnings.emplace_back("Non-integer <studio_version>");
+                const auto studio_version = studio_core::node_text(*header_node, "studio_version");
+                if (studio_version && !studio_version->empty() && !parse_int(studio_version)) {
+                    warnings.emplace_back("Non-integer <studio_version>");
+                }
+
+                // Preview migration (in-memory only) to surface concrete schema rewrites.
+                auto mig = studio_core::migrate_gxp_to_latest(parsed.doc);
+                if (!mig.ok) {
+                    warnings.emplace_back("Migration preview failed: " + mig.error);
+                } else {
+                    for (const auto& w : mig.warnings) {
+                        warnings.push_back("Migration: " + w);
+                    }
+                    for (const auto& c : mig.changes) {
+                        warnings.push_back("Migration change: " + c);
+                    }
+                }
+            }
+        }
     }
 
     const bool ok = errors.empty();
@@ -382,6 +667,10 @@ int main(int argc, char** argv) {
 
     if (command == "validate") {
         return cmd_validate(rest);
+    }
+
+    if (command == "migrate") {
+        return cmd_migrate(rest);
     }
 
     if (command == "export-resource-xml") {

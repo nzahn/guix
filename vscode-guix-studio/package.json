@@ -18,6 +18,10 @@
         "title": "GUix: Open Project (.gxp)"
       },
       {
+        "command": "guix.migrateProject",
+        "title": "GUix: Migrate Project (.gxp)"
+      },
+      {
         "command": "guix.projectSummary",
         "title": "GUix: Project Summary"
       },
@@ -28,8 +32,61 @@
       {
         "command": "guix.validateProject",
         "title": "GUix: Validate Project"
+      },
+      {
+        "command": "guix.refreshProjects",
+        "title": "GUix: Refresh Projects"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "guixStudio",
+          "title": "GUIX",
+          "icon": "resources/guix.svg"
+        }
+      ]
+    },
+    "views": {
+      "guixStudio": [
+        {
+          "id": "guixProjects",
+          "name": "Projects",
+          "icon": "resources/guix.svg"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "guix.refreshProjects",
+          "when": "view == guixProjects",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "guix.projectSummary",
+          "when": "view == guixProjects && viewItem == guixGxp",
+          "group": "inline"
+        },
+        {
+          "command": "guix.migrateProject",
+          "when": "view == guixProjects && viewItem == guixGxp",
+          "group": "inline"
+        },
+        {
+          "command": "guix.validateProject",
+          "when": "view == guixProjects && viewItem == guixGxp",
+          "group": "inline"
+        },
+        {
+          "command": "guix.generateOutputs",
+          "when": "view == guixProjects && viewItem == guixGxp",
+          "group": "inline"
+        }
+      ]
+    },
     "languages": [
       {
         "id": "guix-gxp",

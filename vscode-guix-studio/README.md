@@ -28,5 +28,6 @@ npm run compile
 
 ## Current scope
 - Project summary via `guix_studio_cli summary --json`.
-- Generate outputs via `guix_studio_cli generate --output_path <dir>` (Phase 1: exports a minimal resource-project XML).
+- Generate outputs via `guix_studio_cli generate --output_path <dir>` (Phase 1: exports a minimal resource-project XML and can emit stub resource/spec/binary outputs).
 - Validate project via `guix_studio_cli validate --json`, surfaced as VS Code Diagnostics (Problems panel) on save.
+- A basic “GUIX Projects” view listing workspace `.gxp` files (with context menu actions).

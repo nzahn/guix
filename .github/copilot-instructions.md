@@ -6,6 +6,14 @@
 - `guix_studio/`: GUIX Studio (Windows/MFC) sources. Studio generates GUIX-compatible C code and binary resource outputs; see `guix_studio/resource_gen.cpp` and `guix_studio/binary_resource_gen.cpp`.
 - `test/`: regression tests (notably `test/guix_test/`) driven by CMake + shell scripts; compares rendered output via golden files/checksums.
 
+## Execution cadence (agent behavior)
+- If the user says **"go"** once, treat it as standing permission to keep executing the next logical tasks end-to-end until a hard blocker.
+- Only stop (and ask) when you need a user decision (e.g., behavior ambiguity, output naming/paths, compatibility policy), or when further work would be risky/large (e.g., mass refactors, folder moves, broad API changes).
+- After each meaningful milestone, run the smallest relevant build/smoke test you can (e.g., rebuild `tools/guix_studio_cli`, `npm run compile` for the extension), then summarize:
+  - what changed (files/symbols)
+  - what was verified (commands run)
+  - what you will do next
+
 ## Build (library)
 - The root CMake build **requires** `THREADX_ARCH` and `THREADX_TOOLCHAIN` (set by toolchain files in `cmake/`, e.g. `cmake/cortex_m4.cmake`).
 - Typical embedded build (example from repo docs):
