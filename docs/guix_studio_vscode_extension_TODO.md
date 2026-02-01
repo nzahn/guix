@@ -21,19 +21,14 @@ Use this format when adding new chapters or expanding an existing one:
 - [ ] <task>
 
 ## Current status (as of this branch)
-- CLI exists and runs on macOS: [tools/guix_studio_cli/README.md](tools/guix_studio_cli/README.md)
-- VS Code extension scaffolding exists and compiles: [vscode-guix-studio/README.md](vscode-guix-studio/README.md)
-- Commands implemented: Open Project, Project Summary, Generate Outputs, Validate Project
 
 ## Goal
-Replace the legacy Windows/MFC GUIX Studio app in `guix_studio/` with a cross-platform VS Code extension that can:
 - Open and edit GUIX Studio project files (`.gxp`) and resource-project XML.
 - Generate the same outputs as Studio (C source/header, specification, binary resource `.bin`/`.srec`, standalone binres) with compatible defaults.
-- Provide a visual designer (layout + widget tree + properties) that maps to GUIX runtime concepts.
-
 ## Non-goals (for the first MVP)
-- Reproducing every MFC dialog/panel pixel-for-pixel.
-- Shipping a full Win32 app runner inside VS Code.
+- [x] Assign resource IDs (colors/fonts/pixelmaps/strings): basic support in Properties panel (incl. fill + text colors; string IDs dropdown from string table when present, with Custom… fallback)
+  - Includes a one-click action to create/extend a `string_id` entry in `string_table` (pads `<val>` to match declared languages).
+- [x] Persist editor UI state: grid/snap enabled + spacing, and active theme per display
 - Full feature parity with every legacy Studio feature on day 1 (e.g., every specialized editor/dialog).
 
 ## Key constraints discovered in this repo
@@ -97,7 +92,7 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
   - [x] Generate Outputs (calls CLI)
   - [x] Validate Project (diagnostics)
 - [x] Add a basic “Project Explorer” view container (GUIX Projects tree)
-- [ ] Register custom editor contribution for `.gxp` (planned for M4)
+- [x] Register custom editor contribution for `.gxp`
 
 ### M2 — Cross-platform generator CLI (2–6 weeks)
 **Goal:** a headless tool that reproduces Studio generation outputs.
@@ -106,6 +101,8 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
 - [x] CLI builds with CMake
 - [x] CLI can summarize/validate `.gxp`
 - [x] CLI supports a Phase-1 `generate` flow with stable JSON output contract
+- [x] CLI can export resource-project XML from `.gxp` (best-effort, legacy-compatible shape)
+- [x] Validate previews schema migration in-memory (no silent writes)
 
 - [x] Create a new CMake target for a console app: [tools/guix_studio_cli/](tools/guix_studio_cli/)
 - [ ] Refactor Studio code into layers:
@@ -124,49 +121,55 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
   - [ ] `-x/--xml` resource-project XML input
   - [ ] `--output_path`
 - [ ] Implement/port project loading:
-  - [ ] Parse `.gxp` with a real XML parser (tinyxml2/pugixml/etc) OR port `xml_reader` cleanly
+  - [x] Parse `.gxp` with a portable XML DOM (cross-platform, no MFC)
   - [ ] Round-trip tests (load + save yields semantically equivalent XML)
 - [ ] Backward compatibility layer:
-  - [ ] Detect `<project_version>` and migrate to latest schema in-memory
+  - [x] Detect `<project_version>` and migrate to latest schema in-memory
   - [x] Maintain a migration test corpus (fixtures above)
     - [x] CLI migration tests cover `guix_simple.gxp` and `demo_guix_washing_machine.gxp`
   - [x] Add “save as latest” option (explicit, not silent)
+- [x] Add export-resource-xml smoke tests for fixture projects
 - [ ] Implement/port resource generation and binary resource generation
   - [ ] Verify outputs match Studio for sample projects under `samples/` and `tutorials/`
 
 ### M3 — Extension integrates CLI (1–2 weeks)
 - **Goal:** smooth UX around invoking the CLI (discoverability, logs, diagnostics).
 
-- [ ] Extension downloads/locates the CLI binary per platform
-  - [ ] Option: ship prebuilt binaries as extension assets
-  - [ ] Option: build-from-source in user workspace (last resort)
+- [x] Extension locates the CLI binary per platform (settings/env/common build paths/PATH)
+  - [x] Command: “GUIX: Select CLI Path” writes `guixStudio.cli.path`
+- [x] Optional: scaffold VS Code Tasks for CLI commands (`GUIX: Add VS Code Tasks`)
+- [x] Add `guixStudio.outputPath` setting to avoid output folder prompts
+  - [x] Option: ship prebuilt binaries as extension assets (supports `bin/<platform>(-<arch>)/guix_studio_cli` lookup)
+  - [x] Option: build-from-source in user workspace (last resort) via “GUIX: Build CLI (CMake)” command
 - [ ] Provide “Generate” task UI:
-  - [ ] pick project file, output dir, flags (binary/srec/standalone, endianness)
-  - [ ] show logs in VS Code Output Channel
-  - [ ] parse CLI output and surface errors as Diagnostics
+- [x] Provide “Generate” task UX improvements:
+  - [x] configurable default output dir (`guixStudio.outputPath`)
+  - [x] quick generate command for active `.gxp`
+  - [x] show logs in VS Code Output Channel
+  - [x] parse generator errors into Diagnostics
 - [ ] File watching:
-  - [ ] re-generate on save (optional toggle)
+  - [x] re-generate on save (optional toggle)
 
 ### M4 — Editable designer MVP (visual layout editing) (4–8+ weeks)
 **Goal:** a usable designer for visual layouting: canvas + widget tree + properties + drag/drop editing.
 
-- [ ] Custom editor for `.gxp`
-  - [ ] Open legacy versions read-only with “Migrate Project…” action
-  - [ ] Open latest versions read/write
-- [ ] Widget tree view derived from `.gxp` structure
-- [ ] Properties panel for selected item (display/theme/screen/widget/resource)
-- [ ] Visual canvas (webview)
-  - [ ] Render widget rectangles, names/IDs, selection outlines
-  - [ ] Pan/zoom, grid overlay, snap settings (`grid_spacing`, `snap_spacing`)
-  - [ ] Drag/move and resize handles (updates `.gxp`)
-  - [ ] Z-order operations (bring forward/back)
-  - [ ] Undo/redo integration (VS Code undo stack or internal history)
+- [x] Custom editor for `.gxp`
+  - [x] Open legacy versions read-only with “Migrate Project…” action
+  - [x] Open latest versions read/write
+- [x] Widget tree view derived from `.gxp` structure
+- [x] Properties panel for selected widget (name/type/rect)
+- [x] Visual canvas (webview)
+  - [x] Render widget rectangles + selection outlines
+  - [x] Pan/zoom + grid overlay + snap (spacing configurable in designer; initialized from `.gxp` header `grid_*`/`snap_*`)
+  - [x] Drag/move and resize handles (updates `.gxp`)
+  - [x] Z-order operations (bring forward/back via sibling reorder)
+  - [x] Undo/redo integration (VS Code undo stack; batched Apply and debounced nudges)
 - [ ] Editing primitives (minimum)
-  - [ ] create/rename/delete screens and widgets
-  - [ ] reorder children
-  - [ ] assign resource IDs (colors/fonts/pixelmaps/strings)
+  - [x] create/rename/delete screens and widgets (screens are root widgets; add sibling + duplicate supported)
+  - [x] reorder children
+  - [x] assign resource IDs (colors/fonts/pixelmaps: selectors; strings: string_id dropdown with Custom… fallback; includes fill + text colors)
 - [ ] Multi-display + multi-theme + multi-language UX (minimum)
-  - [ ] switch active display/theme/language and keep edits scoped correctly
+  - [x] switch active display/theme/language (selectors; active theme now persisted per display; resource selectors are theme-scoped; language previews string_table values, warns on missing IDs/translations; can create/extend string records and edit per-language values)
 
 ### M5 — Import/export + advanced editors (ongoing)
 - [ ] CSV language import/export (see `guix_studio/csv_read_write.cpp`)
@@ -182,6 +185,7 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
   - [ ] In CI, run the new CLI and compare generated outputs (normalized whitespace)
 - [ ] Unit tests for `.gxp` parsing and schema migration
 - [ ] Extension smoke tests (command execution + diagnostics)
+  - [x] Smoke script: `npm run -s smoke:gxp` (parses 2-theme + 5-theme `.gxp` fixtures)
 
 ## CI / packaging
 - [ ] Add GitHub Actions workflow to build the extension (TypeScript) and the CLI (macOS/Linux/Windows)

@@ -7,6 +7,21 @@
   "engines": {
     "vscode": "^1.85.0"
   },
+  "activationEvents": [
+    "onLanguage:guix-gxp",
+    "workspaceContains:**/*.gxp",
+    "onCommand:guix.openDesigner",
+    "onCommand:guix.openProject",
+    "onCommand:guix.projectSummary",
+    "onCommand:guix.validateProject",
+    "onCommand:guix.generateOutputs",
+    "onCommand:guix.quickGenerateOutputs",
+    "onCommand:guix.migrateProject",
+    "onCommand:guix.refreshProjects",
+    "onCommand:guix.selectCliPath",
+    "onCommand:guix.addVsCodeTasks",
+    "onCommand:guix.buildCli"
+  ],
   "categories": [
     "Other"
   ],
@@ -14,28 +29,48 @@
   "contributes": {
     "commands": [
       {
+        "command": "guix.openDesigner",
+        "title": "GUIX: Open Designer (Preview)"
+      },
+      {
         "command": "guix.openProject",
-        "title": "GUix: Open Project (.gxp)"
+        "title": "GUIX: Open Project (.gxp)"
       },
       {
         "command": "guix.migrateProject",
-        "title": "GUix: Migrate Project (.gxp)"
+        "title": "GUIX: Migrate Project (.gxp)"
       },
       {
         "command": "guix.projectSummary",
-        "title": "GUix: Project Summary"
+        "title": "GUIX: Project Summary"
       },
       {
         "command": "guix.generateOutputs",
-        "title": "GUix: Generate Outputs"
+        "title": "GUIX: Generate Outputs"
+      },
+      {
+        "command": "guix.quickGenerateOutputs",
+        "title": "GUIX: Quick Generate (Active .gxp)"
       },
       {
         "command": "guix.validateProject",
-        "title": "GUix: Validate Project"
+        "title": "GUIX: Validate Project"
       },
       {
         "command": "guix.refreshProjects",
-        "title": "GUix: Refresh Projects"
+        "title": "GUIX: Refresh Projects"
+      },
+      {
+        "command": "guix.selectCliPath",
+        "title": "GUIX: Select CLI Path"
+      },
+      {
+        "command": "guix.addVsCodeTasks",
+        "title": "GUIX: Add VS Code Tasks"
+      },
+      {
+        "command": "guix.buildCli",
+        "title": "GUIX: Build CLI (CMake)"
       }
     ],
     "viewsContainers": {
@@ -97,12 +132,53 @@
           ".gxp"
         ]
       }
-    ]
+    ],
+    "customEditors": [
+      {
+        "viewType": "guixStudio.gxpDesigner",
+        "displayName": "GUIX Designer (Preview)",
+        "selector": [
+          {
+            "filenamePattern": "*.gxp"
+          }
+        ],
+        "priority": "option"
+      }
+    ],
+    "configuration": {
+      "title": "GUIX Studio",
+      "properties": {
+        "guixStudio.cli.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the guix_studio_cli executable. If empty, the extension will auto-detect via env var (GUIX_STUDIO_CLI_PATH), common build locations, and PATH."
+        },
+        "guixStudio.outputPath": {
+          "type": "string",
+          "default": "",
+          "description": "Default output directory for GUIX generation. If empty, the extension will prompt. If relative, it is resolved against the first workspace folder."
+        },
+        "guixStudio.generateOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically run Quick Generate when a .gxp file is saved. Requires guixStudio.outputPath or generation will be skipped."
+        },
+        "guixStudio.validateOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run GUIX project validation when a .gxp file is saved."
+        }
+      }
+    }
   },
   "scripts": {
     "compile": "tsc -p ./",
+    "smoke:gxp": "npm run -s compile && node scripts/smoke-theme-resources.js",
     "watch": "tsc -watch -p ./",
     "lint": "node -e \"console.log('lint not configured yet')\""
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.3.4"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
