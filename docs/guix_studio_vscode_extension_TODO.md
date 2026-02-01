@@ -193,6 +193,7 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
 - [ ] Decide release packaging:
   - [ ] VSIX includes platform binaries (bigger but easy)
   - [ ] Separate downloads + extension fetches on first run
+- [x] CI produces a VSIX artifact that bundles per-platform `guix_studio_cli` binaries (for evaluation)
 
 ## Open questions (need answers to plan accurately)
 - Do we want “auto-migrate on save” or “explicit migrate command only”?

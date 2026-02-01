@@ -1,5 +1,4 @@
 **/*.ts
 **/*.map
 src/**
-node_modules/**
 .vscode/**
