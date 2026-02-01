@@ -415,7 +415,6 @@ async function addVsCodeTasks(): Promise<void> {
 	const cliCommand = '${config:guixStudio.cli.path}';
 	const configuredOut = vscode.workspace.getConfiguration('guixStudio').get<string>('outputPath');
 	const outDir = configuredOut && configuredOut.trim() ? '${config:guixStudio.outputPath}' : '${workspaceFolder}/guix_studio_out';
-	const exportOut = outDir + '/${fileBasenameNoExtension}.resource.xml';
 	const newTasks = [
 		{
 			label: 'GUIX: Validate active .gxp',
@@ -429,7 +428,7 @@ async function addVsCodeTasks(): Promise<void> {
 			label: 'GUIX: Export resource XML (active .gxp)',
 			type: 'shell',
 			command: cliCommand,
-			args: ['export-resource-xml', '-p', '${file}', '--output', exportOut, '--json'],
+			args: ['export-resource-xml', '-p', '${file}', '--output_path', outDir, '--json'],
 			problemMatcher: [],
 			presentation: { reveal: 'always', panel: 'dedicated' },
 		},

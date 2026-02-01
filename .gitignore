@@ -11,6 +11,9 @@ install_manifest.txt
 compile_commands.json
 CTestTestfile.cmake
 
+# Local build dir used by CLI golden/CI simulations
+/build/guix_studio_cli_ci/
+
 /guix_studio/build/vs_2022/.vs/studiox
 /guix_studio/build/vs_2022/Debug
 /guix_studio/build/vs_2022/Release

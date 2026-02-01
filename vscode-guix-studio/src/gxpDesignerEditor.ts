@@ -317,9 +317,13 @@ export class GxpDesignerEditorProvider implements vscode.CustomTextEditorProvide
 						<div>String</div>
 						<select id="stringId"></select>
 						<div></div>
+						<button class="secondary" id="newStringBtn" title="Create a new string_id, assign it to the widget, and set the current language value">New string…</button>
+						<div></div>
 						<button class="secondary" id="createStringBtn" title="Create/extend a string_record for the selected string_id">Create/extend string_record</button>
 						<div>Str Preview</div>
 						<input id="stringPreview" disabled />
+						<div></div>
+						<div id="stringPreviewHint" style="color:var(--muted); font-size:12px; margin-top:-2px;"></div>
 						<div>Str Value</div>
 						<input id="stringValue" />
 						<div></div>
@@ -404,8 +408,10 @@ export class GxpDesignerEditorProvider implements vscode.CustomTextEditorProvide
 		const elFontId = document.getElementById('fontId');
 		const elNormalMapId = document.getElementById('normalMapId');
 		const elStringId = document.getElementById('stringId');
+		const elNewStringBtn = document.getElementById('newStringBtn');
 		const elCreateStringBtn = document.getElementById('createStringBtn');
 		const elStringPreview = document.getElementById('stringPreview');
+		const elStringPreviewHint = document.getElementById('stringPreviewHint');
 		const elStringValue = document.getElementById('stringValue');
 		const elSetStringValueBtn = document.getElementById('setStringValueBtn');
 		const elLeft = document.getElementById('left');
@@ -914,8 +920,10 @@ export class GxpDesignerEditorProvider implements vscode.CustomTextEditorProvide
 				if (elFontId) elFontId.innerHTML = '';
 				if (elNormalMapId) elNormalMapId.innerHTML = '';
 				if (elStringId) elStringId.innerHTML = '';
+				if (elNewStringBtn) elNewStringBtn.disabled = true;
 				if (elCreateStringBtn) elCreateStringBtn.disabled = true;
 				if (elStringPreview) { elStringPreview.value = ''; elStringPreview.classList.remove('warn'); }
+				if (elStringPreviewHint) elStringPreviewHint.textContent = '';
 				if (elStringValue) elStringValue.value = '';
 				if (elStringValue) elStringValue.disabled = true;
 				if (elSetStringValueBtn) elSetStringValueBtn.disabled = true;
@@ -986,10 +994,23 @@ export class GxpDesignerEditorProvider implements vscode.CustomTextEditorProvide
 					elStringPreview.classList.remove('warn');
 				}
 			}
+			if (elStringPreviewHint) {
+				if (!sid) {
+					elStringPreviewHint.textContent = '';
+				} else if (!hasRecord) {
+					elStringPreviewHint.textContent = 'Missing string_record; setting a value will create it.';
+				} else if (!hasAnyValue) {
+					elStringPreviewHint.textContent = 'String_record has no values yet.';
+				} else if (missingTranslation) {
+					elStringPreviewHint.textContent = 'No translation for ' + (langName || 'current language') + '; preview shows a fallback.';
+				} else {
+					elStringPreviewHint.textContent = '';
+				}
+			}
 			if (!sid) {
 				setPropsWarning('');
 			} else if (!hasRecord) {
-				setPropsWarning('Warning: string_id not found in string_table: ' + sid);
+				setPropsWarning('Warning: string_id not found in string_table: ' + sid + ' (will be created when you set a value)');
 			} else if (!hasAnyValue) {
 				setPropsWarning('Warning: string_id has no values (no <val> entries): ' + sid);
 			} else if (missingTranslation) {
@@ -998,7 +1019,13 @@ export class GxpDesignerEditorProvider implements vscode.CustomTextEditorProvide
 				setPropsWarning('');
 			}
 			if (elStringValue) {
-				elStringValue.placeholder = langName ? ('Value for ' + langName) : '';
+				if (!sid) {
+					elStringValue.placeholder = 'Select a string_id (or use New string…)';
+				} else if (!hasRecord) {
+					elStringValue.placeholder = 'Set value to create string_record (' + (langName || 'current language') + ')';
+				} else {
+					elStringValue.placeholder = langName ? ('Value for ' + langName) : '';
+				}
 			}
 			if (elStringValue && !stringValueDirty) {
 				if (!sid || !hasRecord) {
@@ -1010,6 +1037,16 @@ export class GxpDesignerEditorProvider implements vscode.CustomTextEditorProvide
 			}
 			if (elSetStringValueBtn) {
 				elSetStringValueBtn.disabled = !!readOnly || !sid;
+				if (!sid) {
+					elSetStringValueBtn.textContent = 'Set value';
+					elSetStringValueBtn.title = 'Select or create a string_id first.';
+				} else if (!hasRecord) {
+					elSetStringValueBtn.textContent = 'Set value (create)';
+					elSetStringValueBtn.title = 'Create string_record and set the value for the current language.';
+				} else {
+					elSetStringValueBtn.textContent = 'Set value';
+					elSetStringValueBtn.title = 'Set the string_table value for the current language.';
+				}
 			}
 			if (elCreateStringBtn) {
 				const canEnsure = !readOnly && !!sid && (!hasRecord || (Array.isArray(rec) && rec.length < desiredVals));
@@ -1242,6 +1279,56 @@ export class GxpDesignerEditorProvider implements vscode.CustomTextEditorProvide
 				} else {
 					vscode.postMessage({ type: 'editBatch', ops });
 				}
+			});
+		}
+		if (elNewStringBtn) {
+			elNewStringBtn.addEventListener('click', () => {
+				if (readOnly || !selection) return;
+				const w = findWidget(selection);
+				if (!w) return;
+
+				const rawName = String(w.name || '').trim();
+				const base = rawName
+					? ('STR_' + rawName.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, ''))
+					: 'STR_NEW';
+				const suggestedId = base.length > 0 ? base : 'STR_NEW';
+
+				const idInput = window.prompt('Enter new string_id:', suggestedId);
+				if (idInput === null) return;
+				const sid = String(idInput).trim();
+				if (!sid) return;
+				const exists = !!(model && model.stringTable && model.stringTable[sid]);
+
+				const langs = (model && model.languages && model.languages.length > 0) ? model.languages : ['English'];
+				const idx = clamp(currentLanguageIndex, 0, Math.max(0, langs.length - 1));
+				const langName = String(langs[idx] ?? '');
+				if (exists) {
+					const ok = window.confirm(
+						'String_id already exists: ' + sid + '\n\n' +
+						'Update the value for ' + (langName || 'current language') + '?' 
+					);
+					if (!ok) return;
+				}
+				let defaultValue = '';
+				if (exists && model && model.stringTable && model.stringTable[sid]) {
+					const rec = model.stringTable[sid];
+					if (Array.isArray(rec) && rec.length > 0) {
+						const vIdx = clamp(currentLanguageIndex, 0, Math.max(0, rec.length - 1));
+						defaultValue = String(rec[vIdx] ?? '');
+					}
+				}
+				const valueInput = window.prompt('Enter value for ' + (langName || 'current language') + ':', defaultValue);
+				if (valueInput === null) return;
+				const value = String(valueInput ?? '');
+
+				stringValueDirty = false;
+				vscode.postMessage({
+					type: 'editBatch',
+					ops: [
+						{ kind: 'setStringId', displayIndex: selection.displayIndex, path: selection.path, stringId: sid },
+						{ kind: 'setStringTableValue', displayIndex: selection.displayIndex, stringId: sid, languageIndex: currentLanguageIndex, value },
+					],
+				});
 			});
 		}
 		elDelete.addEventListener('click', deleteSelected);

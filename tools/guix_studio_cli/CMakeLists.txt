@@ -44,12 +44,12 @@ if (BUILD_TESTING)
 
   add_test(
     NAME guix_studio_cli_summary_guix_simple
-    COMMAND guix_studio_cli summary --project ${GUIX_REPO_ROOT}/samples/demo_guix_simple/guix_simple.gxp --json
+    COMMAND $<TARGET_FILE:guix_studio_cli> summary --project ${GUIX_REPO_ROOT}/samples/demo_guix_simple/guix_simple.gxp --json
   )
 
   add_test(
     NAME guix_studio_cli_validate_guix_simple
-    COMMAND guix_studio_cli validate --project ${GUIX_REPO_ROOT}/samples/demo_guix_simple/guix_simple.gxp --json
+    COMMAND $<TARGET_FILE:guix_studio_cli> validate --project ${GUIX_REPO_ROOT}/samples/demo_guix_simple/guix_simple.gxp --json
   )
 
   add_test(
@@ -80,12 +80,32 @@ if (BUILD_TESTING)
   )
 
   add_test(
+    NAME guix_studio_cli_export_resource_xml_golden_guix_simple
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/samples/demo_guix_simple/guix_simple.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_golden_export_guix_simple
+      -DGOLDEN_XML=${CMAKE_CURRENT_LIST_DIR}/tests/golden/guix_simple.resource.xml
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/compare_golden_resource_xml.cmake
+  )
+
+  add_test(
     NAME guix_studio_cli_export_resource_xml_demo_guix_washing_machine
     COMMAND ${CMAKE_COMMAND}
       -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
       -DGUIX_PROJECT=${GUIX_REPO_ROOT}/samples/demo_guix_washing_machine/demo_guix_washing_machine.gxp
       -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_export
       -P ${CMAKE_CURRENT_LIST_DIR}/tests/export_resource_xml_smoke.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_export_resource_xml_golden_demo_guix_washing_machine
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/samples/demo_guix_washing_machine/demo_guix_washing_machine.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_golden_export_demo_guix_washing_machine
+      -DGOLDEN_XML=${CMAKE_CURRENT_LIST_DIR}/tests/golden/demo_guix_washing_machine.resource.xml
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/compare_golden_resource_xml.cmake
   )
 
   add_test(
@@ -106,5 +126,25 @@ if (BUILD_TESTING)
       -DEXPECT_PRESENT=<folder_id>DEFAULT_COLOR_FOLDER</folder_id>;<color_format>GX_COLOR_FORMAT_8BIT_ALPHAMAP</color_format>
       -DEXPECT_ABSENT=<folder_id>4096</folder_id>;<color_format>26</color_format>
       -P ${CMAKE_CURRENT_LIST_DIR}/tests/migrate_smoke.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_export_resource_xml_golden_demo_guix_binres_standalone
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/tutorials/demo_guix_binres_standalone/demo_guix_binres_standalone.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_golden_export_demo_guix_binres_standalone
+      -DGOLDEN_XML=${CMAKE_CURRENT_LIST_DIR}/tests/golden/demo_guix_binres_standalone.resource.xml
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/compare_golden_resource_xml.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_export_resource_xml_golden_all_widgets_5_3_3
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/test/example_internal/all_widgets_5_3_3/all_widgets_5_3_3.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_golden_export_all_widgets_5_3_3
+      -DGOLDEN_XML=${CMAKE_CURRENT_LIST_DIR}/tests/golden/all_widgets_5_3_3.resource.xml
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/compare_golden_resource_xml.cmake
   )
 endif()

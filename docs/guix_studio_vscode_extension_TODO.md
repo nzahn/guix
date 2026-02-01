@@ -141,13 +141,13 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
 - [x] Add `guixStudio.outputPath` setting to avoid output folder prompts
   - [x] Option: ship prebuilt binaries as extension assets (supports `bin/<platform>(-<arch>)/guix_studio_cli` lookup)
   - [x] Option: build-from-source in user workspace (last resort) via “GUIX: Build CLI (CMake)” command
-- [ ] Provide “Generate” task UI:
+- [x] Provide “Generate” task UI:
 - [x] Provide “Generate” task UX improvements:
   - [x] configurable default output dir (`guixStudio.outputPath`)
   - [x] quick generate command for active `.gxp`
   - [x] show logs in VS Code Output Channel
   - [x] parse generator errors into Diagnostics
-- [ ] File watching:
+- [x] File watching:
   - [x] re-generate on save (optional toggle)
 
 ### M4 — Editable designer MVP (visual layout editing) (4–8+ weeks)
@@ -164,12 +164,12 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
   - [x] Drag/move and resize handles (updates `.gxp`)
   - [x] Z-order operations (bring forward/back via sibling reorder)
   - [x] Undo/redo integration (VS Code undo stack; batched Apply and debounced nudges)
-- [ ] Editing primitives (minimum)
+  - [x] Editing primitives (minimum)
   - [x] create/rename/delete screens and widgets (screens are root widgets; add sibling + duplicate supported)
   - [x] reorder children
   - [x] assign resource IDs (colors/fonts/pixelmaps: selectors; strings: string_id dropdown with Custom… fallback; includes fill + text colors)
-- [ ] Multi-display + multi-theme + multi-language UX (minimum)
-  - [x] switch active display/theme/language (selectors; active theme now persisted per display; resource selectors are theme-scoped; language previews string_table values, warns on missing IDs/translations; can create/extend string records and edit per-language values)
+  - [x] Multi-display + multi-theme + multi-language UX (minimum)
+  - [x] switch active display/theme/language (selectors; active theme now persisted per display; resource selectors are theme-scoped; language previews string_table values, warns on missing IDs/translations; can create/extend string records and edit per-language values; includes New string… and Enter-to-commit)
 
 ### M5 — Import/export + advanced editors (ongoing)
 - [ ] CSV language import/export (see `guix_studio/csv_read_write.cpp`)
@@ -183,12 +183,13 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
   - [ ] Pick 3–5 representative `.gxp` projects from `samples/`/`tutorials/`
   - [ ] Run Studio (Windows) once to capture canonical outputs
   - [ ] In CI, run the new CLI and compare generated outputs (normalized whitespace)
+- [x] Golden output comparison (Phase 1): export-resource-xml matches committed fixtures for 4 projects
 - [ ] Unit tests for `.gxp` parsing and schema migration
 - [ ] Extension smoke tests (command execution + diagnostics)
   - [x] Smoke script: `npm run -s smoke:gxp` (parses 2-theme + 5-theme `.gxp` fixtures)
 
 ## CI / packaging
-- [ ] Add GitHub Actions workflow to build the extension (TypeScript) and the CLI (macOS/Linux/Windows)
+- [x] Add GitHub Actions workflow to build the extension (TypeScript) and the CLI (macOS/Linux/Windows)
 - [ ] Decide release packaging:
   - [ ] VSIX includes platform binaries (bigger but easy)
   - [ ] Separate downloads + extension fetches on first run
