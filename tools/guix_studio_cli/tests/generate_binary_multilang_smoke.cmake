@@ -67,7 +67,7 @@ function(read_u32_le out_var offset)
   set(${out_var} ${val} PARENT_SCOPE)
 endfunction()
 
-# Parse theme_data_size out of GX_RESOURCE_HEADER at offset 8.
+# Parse GX_RESOURCE_HEADER.
 set(RES_HDR_SIZE 20)
 read_u16_le(theme_count 4)
 read_u32_le(theme_data_size 8)
@@ -75,9 +75,42 @@ read_u32_le(theme_data_size 8)
 if(NOT theme_count EQUAL 2)
   message(FATAL_ERROR "Unexpected theme_count: ${theme_count}")
 endif()
-if(NOT theme_data_size EQUAL 228)
-  message(FATAL_ERROR "Unexpected theme_data_size. Expected 228, got ${theme_data_size}")
+
+# Validate theme 0 contains a non-empty color table.
+set(theme0_off ${RES_HDR_SIZE})
+math(EXPR theme0_color_count_off "${theme0_off} + 4")
+read_u16_le(theme0_color_count ${theme0_color_count_off})
+if(theme0_color_count LESS 1)
+  message(FATAL_ERROR "Expected theme0_color_count >= 1, got ${theme0_color_count}")
 endif()
+
+# GX_COLOR_HEADER starts immediately after GX_THEME_HEADER.
+set(THEME_HDR_SIZE 114)
+math(EXPR theme0_color_hdr_off "${theme0_off} + ${THEME_HDR_SIZE}")
+read_u16_le(color_magic ${theme0_color_hdr_off})
+math(EXPR theme0_color_hdr_off_2 "${theme0_color_hdr_off} + 2")
+math(EXPR theme0_color_hdr_off_4 "${theme0_color_hdr_off} + 4")
+read_u16_le(color_count_in_hdr ${theme0_color_hdr_off_2})
+read_u32_le(color_data_size ${theme0_color_hdr_off_4})
+
+if(NOT color_magic EQUAL 0x4758)
+  message(FATAL_ERROR "Unexpected GX_COLOR_HEADER magic: ${color_magic}")
+endif()
+if(NOT color_count_in_hdr EQUAL theme0_color_count)
+  message(FATAL_ERROR "GX_COLOR_HEADER count mismatch. theme0=${theme0_color_count}, hdr=${color_count_in_hdr}")
+endif()
+math(EXPR expected_color_data_size "${theme0_color_count} * 4")
+if(NOT color_data_size EQUAL expected_color_data_size)
+  message(FATAL_ERROR "Unexpected GX_COLOR_HEADER data_size. Expected ${expected_color_data_size}, got ${color_data_size}")
+endif()
+
+# First color value for this fixture is CANVAS=4278190080 (0xFF000000).
+math(EXPR first_color_off "${theme0_color_hdr_off} + 8")
+read_u32_le(first_color ${first_color_off})
+if(NOT first_color EQUAL 4278190080)
+  message(FATAL_ERROR "Unexpected first color value. Expected 4278190080, got ${first_color}")
+endif()
+
 math(EXPR string_hdr_off "${RES_HDR_SIZE} + ${theme_data_size}")
 
 read_u16_le(str_magic ${string_hdr_off})

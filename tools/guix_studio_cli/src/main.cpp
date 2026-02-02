@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iostream>
 #include <optional>
@@ -25,6 +26,11 @@ static void write_u32_le(std::ostream& os, uint32_t v) {
     os.write(reinterpret_cast<const char*>(b), 4);
 }
 
+static void write_u8(std::ostream& os, uint8_t v) {
+    const unsigned char b[1] = {static_cast<unsigned char>(v)};
+    os.write(reinterpret_cast<const char*>(b), 1);
+}
+
 struct BinresStringTable {
     std::vector<std::string> language_names;
     uint16_t string_count = 0; // includes the reserved index 0
@@ -32,10 +38,15 @@ struct BinresStringTable {
     std::vector<std::vector<std::optional<std::string>>> strings;
 };
 
+struct BinresThemeData {
+    uint16_t theme_id = 0;
+    std::vector<uint32_t> colors;
+};
+
 static bool write_binres_with_strings(
     std::ostream& os,
     bool include_resource_header,
-    const std::vector<uint16_t>& theme_ids,
+    const std::vector<BinresThemeData>& themes,
     const BinresStringTable& string_table,
     std::string* error) {
     // Minimal-but-loadable GUIX binres image:
@@ -53,7 +64,7 @@ static bool write_binres_with_strings(
     constexpr uint32_t GX_LANGUAGE_HEADER_SIZE = 72;
     constexpr uint32_t GX_LANGUAGE_HEADER_NAME_SIZE = 64;
 
-    const uint16_t theme_count = static_cast<uint16_t>(theme_ids.empty() ? 1 : theme_ids.size());
+    const uint16_t theme_count = static_cast<uint16_t>(themes.empty() ? 1 : themes.size());
     const uint16_t language_count = static_cast<uint16_t>(string_table.language_names.size());
     const uint16_t string_count = string_table.string_count;
 
@@ -85,7 +96,31 @@ static bool write_binres_with_strings(
         return size;
     };
 
-    const uint32_t theme_data_size = GX_THEME_HEADER_SIZE * theme_count;
+    const uint32_t GX_COLOR_HEADER_SIZE = 8;
+
+    auto calc_theme_data_size = [&](const BinresThemeData& theme) -> uint32_t {
+        uint32_t total = 0;
+
+        // Colors section: GX_COLOR_HEADER (8) + color_count * sizeof(GX_COLOR)
+        // where GX_COLOR is stored as ULONG (4 bytes) in binres.
+        if (!theme.colors.empty()) {
+            total += GX_COLOR_HEADER_SIZE;
+            total += static_cast<uint32_t>(theme.colors.size()) * 4U;
+        }
+
+        // Future: palettes, fonts, pixelmaps.
+        return total;
+    };
+
+    uint32_t theme_data_size = 0;
+    if (themes.empty()) {
+        theme_data_size = GX_THEME_HEADER_SIZE;
+    } else {
+        for (const auto& t : themes) {
+            theme_data_size += GX_THEME_HEADER_SIZE;
+            theme_data_size += calc_theme_data_size(t);
+        }
+    }
 
     uint32_t string_tables_total_size = 0;
     std::vector<uint32_t> per_language_data_size;
@@ -110,18 +145,82 @@ static bool write_binres_with_strings(
         write_u32_le(os, data_size);
     }
 
-    // GX_THEME_HEADER (114 bytes each)
-    for (uint16_t i = 0; i < theme_count; ++i) {
-        const uint16_t theme_id = theme_ids.empty() ? 0 : theme_ids[i];
+    auto write_theme_header = [&](uint16_t theme_id, uint16_t color_count, uint32_t color_data_size, uint32_t theme_total_data_size) {
+        // Layout must match reads in `common/src/gx_binres_theme_load.c`.
         write_u16_le(os, GX_MAGIC_NUMBER);
         write_u16_le(os, theme_id);
-        write_u16_le(os, 0); // color count
+        write_u16_le(os, color_count);
         write_u16_le(os, 0); // palette count
         write_u16_le(os, 0); // font count
         write_u16_le(os, 0); // pixelmap count
-        {
-            const std::string zeros(102, '\0');
-            os.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
+
+        // vscroll appearance
+        write_u16_le(os, 0);
+        write_u16_le(os, 0);
+        write_u16_le(os, 0);
+        write_u16_le(os, 0);
+        write_u8(os, 0);
+        for (int i = 0; i < 7; ++i) {
+            write_u32_le(os, 0);
+        }
+
+        // hscroll appearance
+        write_u16_le(os, 0);
+        write_u16_le(os, 0);
+        write_u16_le(os, 0);
+        write_u16_le(os, 0);
+        write_u8(os, 0);
+        for (int i = 0; i < 7; ++i) {
+            write_u32_le(os, 0);
+        }
+
+        write_u32_le(os, 0); // vscroll style
+        write_u32_le(os, 0); // hscroll style
+
+        write_u32_le(os, color_data_size);
+        write_u32_le(os, 0); // palette data size
+        write_u32_le(os, 0); // font data size
+        write_u32_le(os, 0); // pixelmap data size
+        write_u32_le(os, theme_total_data_size);
+    };
+
+    auto write_color_section = [&](const BinresThemeData& theme) {
+        if (theme.colors.empty()) {
+            return;
+        }
+
+        const uint16_t count = static_cast<uint16_t>(std::min<size_t>(theme.colors.size(), 0xFFFF));
+        const uint32_t data_bytes = static_cast<uint32_t>(count) * 4U;
+
+        // GX_COLOR_HEADER
+        write_u16_le(os, GX_MAGIC_NUMBER);
+        write_u16_le(os, count);
+        write_u32_le(os, data_bytes);
+
+        // GX_COLOR table (ULONG per entry)
+        for (uint16_t i = 0; i < count; ++i) {
+            write_u32_le(os, theme.colors[i]);
+        }
+    };
+
+    // Themes are serialized as:
+    //   GX_THEME_HEADER
+    //   [color section]
+    //   [palette section]
+    //   [font section]
+    //   [pixelmap section]
+    // repeated per theme.
+    if (themes.empty()) {
+        // Minimal single theme.
+        write_theme_header(0, 0, 0, 0);
+    } else {
+        for (const auto& theme : themes) {
+            const uint16_t color_count = static_cast<uint16_t>(std::min<size_t>(theme.colors.size(), 0xFFFF));
+            const uint32_t color_section_size = theme.colors.empty() ? 0U : (GX_COLOR_HEADER_SIZE + static_cast<uint32_t>(color_count) * 4U);
+            const uint32_t theme_total_data_size = color_section_size; // palette/font/pixelmap not yet included
+
+            write_theme_header(theme.theme_id, color_count, color_section_size, theme_total_data_size);
+            write_color_section(theme);
         }
     }
 
@@ -1313,13 +1412,55 @@ int cmd_generate(const std::vector<std::string>& args) {
             bool wrote = false;
             if (have_parsed_gxp && selected_display) {
                 // Determine theme IDs to include.
-                std::vector<uint16_t> theme_ids;
+                std::vector<BinresThemeData> themes;
                 {
-                    std::vector<std::string> known_themes;
+                    struct ParsedTheme {
+                        std::string name;
+                        std::vector<uint32_t> colors;
+                    };
+
+                    std::vector<ParsedTheme> known_themes;
                     if (const auto* ti = selected_display->firstChild("theme_info")) {
+                        ParsedTheme* current = nullptr;
                         for (const auto& c : ti->children) {
                             if (c.name == "theme_name" && !c.text.empty()) {
-                                known_themes.push_back(c.text);
+                                known_themes.push_back({c.text, {}});
+                                current = &known_themes.back();
+                                continue;
+                            }
+
+                            if (c.name == "theme_data" && current) {
+                                // Recursively collect <resource> nodes with <type>COLOR</type>.
+                                std::function<void(const studio_core::XmlNode&)> walk;
+                                walk = [&](const studio_core::XmlNode& n) {
+                                    if (n.name == "resource") {
+                                        const auto* t = n.firstChild("type");
+                                        if (t && t->text == "COLOR") {
+                                            const auto* enabled = n.firstChild("enabled");
+                                            if (enabled && !enabled->text.empty()) {
+                                                std::string e = enabled->text;
+                                                std::transform(e.begin(), e.end(), e.begin(), [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+                                                if (e != "TRUE") {
+                                                    // skip disabled colors
+                                                    return;
+                                                }
+                                            }
+                                            const auto* cv = n.firstChild("colorval");
+                                            if (cv && !cv->text.empty()) {
+                                                try {
+                                                    const uint32_t v = static_cast<uint32_t>(std::stoul(cv->text));
+                                                    current->colors.push_back(v);
+                                                } catch (...) {
+                                                }
+                                            }
+                                        }
+                                    }
+                                    for (const auto& ch : n.children) {
+                                        walk(ch);
+                                    }
+                                };
+
+                                walk(c);
                             }
                         }
                     }
@@ -1328,19 +1469,25 @@ int cmd_generate(const std::vector<std::string>& args) {
                     if (!selected_theme_names.empty()) {
                         selected_themes = selected_theme_names;
                     } else {
-                        selected_themes = known_themes;
+                        for (const auto& t : known_themes) {
+                            selected_themes.push_back(t.name);
+                        }
                     }
 
-                    for (const auto& t : selected_themes) {
+                    for (const auto& name : selected_themes) {
                         for (size_t i = 0; i < known_themes.size(); ++i) {
-                            if (known_themes[i] == t) {
-                                theme_ids.push_back(static_cast<uint16_t>(i));
+                            if (known_themes[i].name == name) {
+                                BinresThemeData td;
+                                td.theme_id = static_cast<uint16_t>(i);
+                                td.colors = known_themes[i].colors;
+                                themes.push_back(std::move(td));
                                 break;
                             }
                         }
                     }
-                    if (theme_ids.empty()) {
-                        theme_ids.push_back(0);
+
+                    if (themes.empty()) {
+                        themes.push_back(BinresThemeData{});
                     }
                 }
 
@@ -1414,7 +1561,7 @@ int cmd_generate(const std::vector<std::string>& args) {
                             }
                         }
 
-                        wrote = write_binres_with_strings(f, include_header, theme_ids, tbl, &err);
+                        wrote = write_binres_with_strings(f, include_header, themes, tbl, &err);
                     }
                 }
             }

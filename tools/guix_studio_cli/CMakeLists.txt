@@ -341,6 +341,17 @@ if (BUILD_TESTING)
   )
 
   add_test(
+    NAME guix_studio_cli_generate_binary_theme_filter_demo_guix_binres
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/tutorials/demo_guix_binres/demo_guix_binres.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_generate_binary_theme_filter_demo_guix_binres
+      -DTHEME_NAME=theme_2
+      -DEXPECT_THEME_ID=1
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/generate_binary_theme_filter_smoke.cmake
+  )
+
+  add_test(
     NAME guix_studio_cli_export_resource_xml_golden_all_widgets_5_3_3
     COMMAND ${CMAKE_COMMAND}
       -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
