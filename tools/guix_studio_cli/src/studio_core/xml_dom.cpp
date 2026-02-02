@@ -79,25 +79,53 @@ static std::optional<std::string> parse_name(std::string_view s, size_t& i) {
     return std::string(s.substr(start, i - start));
 }
 
-static void skip_attributes(std::string_view s, size_t& i) {
-    // We do not support attributes; skip until '>' or '/>' while handling quoted strings.
-    while (i < s.size()) {
-        if (s[i] == '>') return;
-        if (starts_with(s, i, "/>")) return;
-        if (s[i] == '"') {
-            i++;
-            while (i < s.size() && s[i] != '"') i++;
-            if (i < s.size()) i++;
-            continue;
-        }
-        if (s[i] == '\'') {
-            i++;
-            while (i < s.size() && s[i] != '\'') i++;
-            if (i < s.size()) i++;
-            continue;
-        }
+static std::optional<std::string> parse_quoted_value(std::string_view s, size_t& i, std::string& error) {
+    skip_ws(s, i);
+    if (i >= s.size() || (s[i] != '"' && s[i] != '\'')) {
+        error = "Expected quoted attribute value";
+        return std::nullopt;
+    }
+    const char quote = s[i++];
+    const size_t start = i;
+    while (i < s.size() && s[i] != quote) {
         i++;
     }
+    if (i >= s.size()) {
+        error = "Unterminated attribute value";
+        return std::nullopt;
+    }
+    auto val = std::string(s.substr(start, i - start));
+    i++; // closing quote
+    return xml_unescape(std::move(val));
+}
+
+static bool parse_attributes(std::string_view s, size_t& i, std::vector<XmlAttr>& outAttrs, std::string& error) {
+    // Parse attributes until '>' or '/>'.
+    while (i < s.size()) {
+        skip_ws(s, i);
+        if (i >= s.size()) break;
+        if (s[i] == '>' || starts_with(s, i, "/>")) {
+            return true;
+        }
+
+        auto aname = parse_name(s, i);
+        if (!aname) {
+            error = "Invalid attribute name";
+            return false;
+        }
+
+        skip_ws(s, i);
+        if (i >= s.size() || s[i] != '=') {
+            error = "Expected '=' after attribute name";
+            return false;
+        }
+        i++; // '='
+
+        auto aval = parse_quoted_value(s, i, error);
+        if (!aval) return false;
+        outAttrs.push_back(XmlAttr{*aname, *aval});
+    }
+    return true;
 }
 
 static std::optional<XmlNode> parse_element(std::string_view s, size_t& i, std::string& error);
@@ -159,11 +187,14 @@ static std::optional<XmlNode> parse_element(std::string_view s, size_t& i, std::
         return std::nullopt;
     }
 
-    skip_attributes(s, i);
+    XmlNode node;
+    node.name = *name;
+
+    if (!parse_attributes(s, i, node.attrs, error)) {
+        return std::nullopt;
+    }
     if (starts_with(s, i, "/>")) {
         i += 2;
-        XmlNode node;
-        node.name = *name;
         return node;
     }
 
@@ -172,9 +203,6 @@ static std::optional<XmlNode> parse_element(std::string_view s, size_t& i, std::
         return std::nullopt;
     }
     i++; // '>'
-
-    XmlNode node;
-    node.name = *name;
 
     while (i < s.size()) {
         if (starts_with(s, i, "</")) {
@@ -308,6 +336,14 @@ static void write_node(std::string& out, const XmlNode& node, const XmlWriteOpti
     write_indent(out, opts.indent_spaces, level);
     out += "<";
     out += node.name;
+
+    for (const auto& a : node.attrs) {
+        out += " ";
+        out += a.name;
+        out += "=\"";
+        out += xml_escape(a.value);
+        out += "\"";
+    }
     out += ">";
 
     const bool has_children = !node.children.empty();

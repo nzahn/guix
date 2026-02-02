@@ -8,13 +8,16 @@ import {
 	type GxpProject,
 } from './gxpModel';
 
+type DesignerCommand = 'exportStringsCsv' | 'importStringsCsv' | 'exportXliff' | 'importXliff';
+
 type WebviewToExtensionMessage =
 	| { type: 'ready' }
 	| { type: 'edit'; op: GxpEditOperation }
 	| { type: 'editBatch'; ops: GxpEditOperation[] }
 	| { type: 'undo' }
 	| { type: 'redo' }
-	| { type: 'migrate' };
+	| { type: 'migrate' }
+	| { type: 'command'; command: DesignerCommand };
 
 type ExtensionToWebviewMessage =
 	| { type: 'init'; project: GxpProject; readOnly: boolean; reason?: string }
@@ -123,6 +126,17 @@ export class GxpDesignerEditorProvider implements vscode.CustomTextEditorProvide
 			}
 			if (m.type === 'migrate') {
 				await vscode.commands.executeCommand('guix.migrateProject', document.uri.fsPath);
+				return;
+			}
+			if (m.type === 'command') {
+				const map: Record<DesignerCommand, string> = {
+					exportStringsCsv: 'guix.exportStringsCsv',
+					importStringsCsv: 'guix.importStringsCsv',
+					exportXliff: 'guix.exportXliff',
+					importXliff: 'guix.importXliff',
+				};
+				const cmd = map[m.command];
+				await vscode.commands.executeCommand(cmd, document.uri.fsPath);
 				return;
 			}
 			if (m.type !== 'edit' && m.type !== 'editBatch') return;
@@ -276,6 +290,13 @@ export class GxpDesignerEditorProvider implements vscode.CustomTextEditorProvide
 					<select id="displaySel" title="Active display"></select>
 					<select id="themeSel" title="Active theme"></select>
 					<select id="languageSel" title="Active language"></select>
+					<select id="stringsActionSel" title="Strings import/export actions">
+						<option value="exportStringsCsv">Strings: Export CSV</option>
+						<option value="importStringsCsv">Strings: Import CSV</option>
+						<option value="exportXliff">Strings: Export XLIFF</option>
+						<option value="importXliff">Strings: Import XLIFF</option>
+					</select>
+					<button class="secondary" id="stringsRunBtn" title="Run selected strings action">Run</button>
 					<button class="secondary" id="addRootBtn" title="Add a new root widget (screen/window)">Add Screen</button>
 					<button class="secondary" id="deleteRootBtn" title="Delete selected root widget (screen/window)">Delete Screen</button>
 					<button class="secondary" id="gridBtn" title="Toggle grid overlay">Grid</button>
@@ -390,12 +411,41 @@ export class GxpDesignerEditorProvider implements vscode.CustomTextEditorProvide
 		const elDisplaySel = document.getElementById('displaySel');
 		const elThemeSel = document.getElementById('themeSel');
 		const elLanguageSel = document.getElementById('languageSel');
+			const elStringsActionSel = document.getElementById('stringsActionSel');
+			const elStringsRunBtn = document.getElementById('stringsRunBtn');
 		const elAddRoot = document.getElementById('addRootBtn');
 		const elDeleteRoot = document.getElementById('deleteRootBtn');
 		const elGridBtn = document.getElementById('gridBtn');
 		const elGridSpacing = document.getElementById('gridSpacing');
 		const elSnapBtn = document.getElementById('snapBtn');
 		const elSnapSpacing = document.getElementById('snapSpacing');
+
+			function isImportCommand(cmd) {
+				return cmd === 'importStringsCsv' || cmd === 'importXliff';
+			}
+
+			function updateStringsActionsUi() {
+				if (!elStringsActionSel || !elStringsRunBtn) return;
+				const cmd = String(elStringsActionSel.value || '');
+				const disabled = !cmd || (readOnly && isImportCommand(cmd));
+				elStringsRunBtn.disabled = !!disabled;
+				elStringsRunBtn.title = !cmd
+					? 'Select a strings action'
+					: disabled
+						? 'This project is read-only (legacy). Migrate before importing.'
+						: 'Run selected strings action';
+			}
+
+			function runSelectedStringsAction() {
+				if (!elStringsActionSel) return;
+				const cmd = String(elStringsActionSel.value || '');
+				if (!cmd) return;
+				if (readOnly && isImportCommand(cmd)) {
+					window.alert('This project is read-only (legacy). Migrate before importing.');
+					return;
+				}
+				vscode.postMessage({ type: 'command', command: cmd });
+			}
 
 		const elName = document.getElementById('name');
 		const elType = document.getElementById('type');
@@ -1340,6 +1390,8 @@ export class GxpDesignerEditorProvider implements vscode.CustomTextEditorProvide
 		if (elAddRoot) elAddRoot.addEventListener('click', addRootToCurrentDisplay);
 		if (elDeleteRoot) elDeleteRoot.addEventListener('click', deleteSelectedRoot);
 		elMigrateBtn.addEventListener('click', () => vscode.postMessage({ type: 'migrate' }));
+		if (elStringsActionSel) elStringsActionSel.addEventListener('change', updateStringsActionsUi);
+		if (elStringsRunBtn) elStringsRunBtn.addEventListener('click', runSelectedStringsAction);
 		elZoomFit.addEventListener('click', () => { fitToDisplay(); draw(); });
 		elDisplaySel.addEventListener('change', () => { setCurrentDisplay(asInt(elDisplaySel.value, 0)); });
 		elGridBtn.addEventListener('click', () => {
@@ -1622,6 +1674,7 @@ export class GxpDesignerEditorProvider implements vscode.CustomTextEditorProvide
 				renderTree();
 				fitToDisplay();
 				updateProperties();
+				updateStringsActionsUi();
 				draw();
 			}
 		});

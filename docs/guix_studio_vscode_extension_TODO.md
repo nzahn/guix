@@ -113,13 +113,13 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
   - [ ] `CFile/CStdioFile` → stdio/iostream/fs
   - [ ] Path handling: use `std::filesystem` and normalize separators
 - [ ] Preserve CLI semantics from `guix_studio/CommandInfo.*`:
-  - [ ] `-p/--project` `.gxp`
-  - [ ] `-n/--nogui` (implicit)
-  - [ ] `-r/--resource`, `-s/--specification`
-  - [ ] `-b/--binary`, `--big_endian`, `--no_res_header`
-  - [ ] `-d/--display`, `-t/--theme`, `-l/--language`
-  - [ ] `-x/--xml` resource-project XML input
-  - [ ] `--output_path`
+  - [x] `-p/--project` `.gxp`
+  - [x] `-n/--nogui` (implicit; CLI is always headless)
+  - [x] `-r/--resource`, `-s/--specification` (Phase 1: stub outputs)
+  - [x] `-b/--binary`, `--big_endian`, `--no_res_header` (Phase 1: stub output)
+  - [x] `-d/--display`, `-t/--theme`, `-l/--language` (supported by `generate`; `export-resource-xml` supports `--display/--theme`)
+  - [x] `-x/--xml` resource-project XML input (supported by `generate`)
+  - [x] `--output_path`
 - [ ] Implement/port project loading:
   - [x] Parse `.gxp` with a portable XML DOM (cross-platform, no MFC)
   - [ ] Round-trip tests (load + save yields semantically equivalent XML)
@@ -148,6 +148,7 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
   - [x] quick generate command for active `.gxp`
   - [x] show logs in VS Code Output Channel
   - [x] parse generator errors into Diagnostics
+- [x] Detect CLI capability mismatches (older binaries missing subcommands) and prompt to build/select a newer CLI when needed
 - [x] File watching:
   - [x] re-generate on save (optional toggle)
 
@@ -173,23 +174,30 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
   - [x] switch active display/theme/language (selectors; active theme now persisted per display; resource selectors are theme-scoped; language previews string_table values, warns on missing IDs/translations; can create/extend string records and edit per-language values; includes New string… and Enter-to-commit)
 
 ### M5 — Import/export + advanced editors (ongoing)
-- [ ] CSV language import/export (see `guix_studio/csv_read_write.cpp`)
-- [ ] XLIFF import/export (see `guix_studio/xliff_read_write.cpp`)
+- [x] CSV language import/export (see `guix_studio/csv_read_write.cpp`)
+  - Implemented in `guix_studio_cli` as `export-strings` / `import-strings` using legacy Studio CSV header format: `name,<srcLangId>,<targetLangId...>` with CTest smoke coverage.
+- [x] XLIFF import/export (see `guix_studio/xliff_read_write.cpp`)
+  - Implemented in `guix_studio_cli` as `export-xliff` / `import-xliff` with CTest smoke coverage.
+- [x] VS Code extension integration for translation workflows
+  - Commands: `GUIX: Export Strings (CSV)`, `GUIX: Import Strings (CSV)`, `GUIX: Export XLIFF`, `GUIX: Import XLIFF`
+  - Designer quick actions: single dropdown + Run button; import actions disabled for legacy read-only projects (also enforced in command handlers)
 - [ ] Animation + screen flow editing (later; large feature surface)
 
 ---
 
 ## Testing strategy (make this real early)
-- [ ] Golden output comparison for generators
-  - [ ] Pick 3–5 representative `.gxp` projects from `samples/`/`tutorials/`
-  - [ ] Run Studio (Windows) once to capture canonical outputs
-  - [ ] In CI, run the new CLI and compare generated outputs (normalized whitespace)
+- [x] Golden output comparison for generators (Phase 1 subset: resource-project XML)
+  - [x] Pick representative `.gxp` projects from `samples/`/`tutorials/` (4 fixtures)
+  - [x] Use committed canonical `.resource.xml` fixtures (legacy Studio shape)
+  - [x] In CI, run the CLI and compare generated `.resource.xml` outputs (normalized whitespace)
 - [x] Golden output comparison (Phase 1): export-resource-xml matches committed fixtures for 4 projects
+- [x] Golden output comparison (Phase 1): generate produces the same `.resource.xml` as the committed fixtures for 4 projects
 - [ ] Unit tests for `.gxp` parsing and schema migration
   - [x] Migration is idempotent (migrate twice yields identical output)
   - [x] Golden migration output comparison (2 projects)
 - [ ] Extension smoke tests (command execution + diagnostics)
   - [x] Smoke script: `npm run -s smoke:gxp` (parses 2-theme + 5-theme `.gxp` fixtures)
+  - [x] Smoke script optionally sanity-checks `guix_studio_cli` execution (`summary --json`), and will also exercise CSV/XLIFF export if the CLI advertises those subcommands
 
 ## CI / packaging
 - [x] Add GitHub Actions workflow to build the extension (TypeScript) and the CLI (macOS/Linux/Windows)

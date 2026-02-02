@@ -7,10 +7,16 @@
 
 namespace studio_core {
 
+struct XmlAttr {
+    std::string name;
+    std::string value;
+};
+
 struct XmlNode {
     std::string name;
     std::string text; // concatenated text nodes (trim preserved as-is)
     std::vector<XmlNode> children;
+    std::vector<XmlAttr> attrs;
 
     const XmlNode* firstChild(const char* childName) const;
     XmlNode* firstChild(const char* childName);

@@ -42,6 +42,10 @@ npm run compile
 - `GUIX: Generate Outputs`: interactive generation with prompts.
 - `GUIX: Quick Generate (Active .gxp)`: no prompts; uses `guixStudio.outputPath`.
 - `GUIX: Build CLI (CMake)`: configures/builds `tools/guix_studio_cli` in the current workspace and sets `guixStudio.cli.path`.
+- `GUIX: Export Strings (CSV)`: exports legacy Studio CSV (`name,<srcLangId>,<targetLangId...>`).
+- `GUIX: Import Strings (CSV)`: imports legacy Studio CSV and updates the project (can add missing languages).
+- `GUIX: Export Strings (XLIFF)`: exports XLIFF 2.0 or 1.2 for translation workflows.
+- `GUIX: Import Strings (XLIFF)`: imports XLIFF and updates the project (can add missing target language).
 
 ## Bundling a prebuilt CLI (optional)
 If you want the extension to carry a prebuilt `guix_studio_cli`, place it under one of these paths:
@@ -60,3 +64,4 @@ Notes on tasks:
 - Generate outputs via `guix_studio_cli generate --output_path <dir>` (Phase 1: exports a minimal resource-project XML and can emit stub resource/spec/binary outputs).
 - Validate project via `guix_studio_cli validate --json`, surfaced as VS Code Diagnostics (Problems panel) on save.
 - A basic “GUIX Projects” view listing workspace `.gxp` files (with context menu actions).
+- String translation workflows (CSV + XLIFF) backed by `guix_studio_cli`.

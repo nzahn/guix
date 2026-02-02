@@ -1,8 +1,18 @@
 # ninja log v7
-1	218	1769977184885117033	CMakeFiles/studio_core.dir/src/studio_core/resource_project.cpp.o	e6b261edd92112e5
-1	219	1769977184884938825	CMakeFiles/studio_core.dir/src/studio_core/gxp_project.cpp.o	2f3d8913585bd218
-1	279	1769977184885325698	CMakeFiles/studio_core.dir/src/studio_core/xml_writer.cpp.o	6ec510d3945673df
-1	287	1769977184885223699	CMakeFiles/studio_core.dir/src/studio_core/xml_reader.cpp.o	873b04f8b7638201
-287	308	1769977185171337984	libstudio_core.a	62f756df519039dc
-1	339	1769977184885478948	CMakeFiles/guix_studio_cli.dir/src/main.cpp.o	8765d2adad06db39
-339	362	1769977185223010193	guix_studio_cli	2337b8ffd20772d7
+10	285	1770073175264500067	CMakeFiles/studio_core.dir/src/studio_core/resource_project.cpp.o	e6b261edd92112e5
+10	269	1770073175264249025	CMakeFiles/studio_core.dir/src/studio_core/gxp_project.cpp.o	2f3d8913585bd218
+12	342	1770073175266180943	CMakeFiles/studio_core.dir/src/studio_core/xml_writer.cpp.o	6ec510d3945673df
+11	351	1770073175265895276	CMakeFiles/studio_core.dir/src/studio_core/xml_reader.cpp.o	873b04f8b7638201
+423	451	1770073175677680760	libstudio_core.a	a871559d7f721630
+12	460	1770073175266346068	CMakeFiles/guix_studio_cli.dir/src/main.cpp.o	8765d2adad06db39
+460	488	1770073175714153909	guix_studio_cli	2337b8ffd20772d7
+2	55	1770073272035979667	build.ninja	9f0d4262ccc340c2
+9	224	1770073175263968400	CMakeFiles/studio_core.dir/src/studio_core/language_registry.cpp.o	120c42e9c06e6201
+10	344	1770073175264386025	CMakeFiles/studio_core.dir/src/studio_core/gxp_migrate.cpp.o	ce8eac47d33ac0d9
+11	389	1770073175265681609	CMakeFiles/studio_core.dir/src/studio_core/xml_dom.cpp.o	77940a24d9dbacaa
+11	395	1770073175265466401	CMakeFiles/studio_core.dir/src/studio_core/strings_xliff.cpp.o	509ecdcc80e67efb
+10	416	1770073175264608525	CMakeFiles/studio_core.dir/src/studio_core/resource_xml_export.cpp.o	a9df108a3011b925
+10	423	1770073175264710775	CMakeFiles/studio_core.dir/src/studio_core/strings_csv.cpp.o	f87bfe1a431553fb
+1	53	1770073272035979667	build.ninja	9f0d4262ccc340c2
+3	333	1770073272042529449	CMakeFiles/guix_studio_cli.dir/src/main.cpp.o	8765d2adad06db39
+333	358	1770073272372781530	guix_studio_cli	2337b8ffd20772d7

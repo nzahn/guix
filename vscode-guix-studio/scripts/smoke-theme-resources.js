@@ -6,6 +6,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const cp = require('child_process');
 
 function fail(message) {
 	console.error(`[smoke:gxp] FAIL: ${message}`);
@@ -20,6 +22,110 @@ function main() {
 	// Ensure we load the compiled output (this is run via `npm run compile` first).
 	// eslint-disable-next-line @typescript-eslint/no-var-requires
 	const { parseGxp, applyGxpEdit } = require(path.join(__dirname, '..', 'out', 'gxpModel'));
+
+	function findCliCandidatePaths() {
+		const exe = process.platform === 'win32' ? 'guix_studio_cli.exe' : 'guix_studio_cli';
+		const repoRoot = path.resolve(__dirname, '..', '..');
+		return [
+			process.env.GUIX_STUDIO_CLI,
+			path.join(repoRoot, 'build', 'guix_studio_cli_ninja', exe),
+			path.join(repoRoot, 'build', 'guix_studio_cli', exe),
+			path.join(repoRoot, 'tools', 'guix_studio_cli', 'build', exe),
+		].filter(Boolean);
+	}
+
+	function findCli() {
+		const candidates = [];
+		for (const p of findCliCandidatePaths()) {
+			try {
+				if (fs.existsSync(p) && fs.statSync(p).isFile()) candidates.push(p);
+			} catch {
+				// ignore
+			}
+		}
+		if (candidates.length === 0) return null;
+
+		// Prefer a CLI that responds to `help` (guards against wrong binary/permission issues)
+		// and, when possible, advertises translation subcommands.
+		let firstRunnable = null;
+		for (const p of candidates) {
+			const h = runCli(p, ['help'], undefined);
+			if (!h.ok) continue;
+			if (!firstRunnable) firstRunnable = p;
+			const txt = String(h.out || '');
+			if (txt.includes('export-strings') && txt.includes('export-xliff')) {
+				return p;
+			}
+		}
+		return firstRunnable || candidates[0];
+	}
+
+	function runCli(cliPath, args, cwd) {
+		try {
+			const out = cp.execFileSync(cliPath, args, {
+				cwd,
+				encoding: 'utf8',
+				stdio: ['ignore', 'pipe', 'pipe'],
+			});
+			return { ok: true, out: String(out) };
+		} catch (err) {
+			const stderr = err && err.stderr ? String(err.stderr) : '';
+			const stdout = err && err.stdout ? String(err.stdout) : '';
+			return {
+				ok: false,
+				err: `${err instanceof Error ? err.message : String(err)}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+			};
+		}
+	}
+
+	function maybeRunCliSmoke() {
+		const cli = findCli();
+		if (!cli) {
+			console.log('[smoke:gxp] NOTE: guix_studio_cli not found; skipping CLI smoke (set GUIX_STUDIO_CLI to force)');
+			return;
+		}
+
+		const repoRoot = path.resolve(__dirname, '..', '..');
+		const gxpPath = path.resolve(repoRoot, 'samples', 'demo_guix_simple', 'guix_simple.gxp');
+		if (!fs.existsSync(gxpPath)) {
+			console.log(`[smoke:gxp] NOTE: missing CLI smoke fixture: ${gxpPath}`);
+			return;
+		}
+
+		const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guix-vscode-smoke-cli-'));
+		try {
+			// Basic execution check.
+			const summary = runCli(cli, ['summary', '--project', gxpPath, '--json'], repoRoot);
+			assert(summary.ok, `CLI summary failed: ${summary.err}`);
+			// Accept either newer JSON contract (ok:true) or older one (project_name present).
+			assert(/"ok"\s*:\s*true/.test(summary.out) || /"project_name"\s*:\s*"/.test(summary.out), 'CLI summary JSON missing expected fields');
+
+			const help = runCli(cli, ['help'], repoRoot);
+			const helpText = help.ok ? String(help.out || '') : '';
+			const supportsTranslations = helpText.includes('export-strings') && helpText.includes('export-xliff');
+			if (!supportsTranslations) {
+				console.log('[smoke:gxp] NOTE: CLI does not advertise translation subcommands; skipping CSV/XLIFF smoke');
+				return;
+			}
+
+			// Translation workflow quick checks.
+			const csvPath = path.join(outDir, 'strings.csv');
+			const xlfPath = path.join(outDir, 'strings.xlf');
+			const expCsv = runCli(cli, ['export-strings', '--project', gxpPath, '--output', csvPath, '--src', 'English', '--target', 'French', '--json'], repoRoot);
+			assert(expCsv.ok, `CLI export-strings failed: ${expCsv.err}`);
+			assert(fs.existsSync(csvPath), 'CLI export-strings did not create output CSV');
+
+			const expXlf = runCli(cli, ['export-xliff', '--project', gxpPath, '--output', xlfPath, '--src', 'English', '--target', 'French', '--version', '2', '--json'], repoRoot);
+			assert(expXlf.ok, `CLI export-xliff failed: ${expXlf.err}`);
+			assert(fs.existsSync(xlfPath), 'CLI export-xliff did not create output XLIFF');
+
+			if (!process.exitCode) {
+				console.log(`[smoke:gxp] OK: CLI smoke passed (cli=${path.basename(cli)})`);
+			}
+		} finally {
+			try { fs.rmSync(outDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	}
 
 	function roundTripStringEdit(gxpPath, xmlText, project) {
 		// Exercise `setStringTableValue` end-to-end (apply edit -> reparse -> assert).
@@ -156,6 +262,7 @@ function main() {
 
 	if (process.argv[2]) {
 		checkOne(path.resolve(process.argv[2]));
+		maybeRunCliSmoke();
 		return;
 	}
 
@@ -166,6 +273,8 @@ function main() {
 	if (fs.existsSync(defaultMultiLang)) {
 		checkOne(defaultMultiLang);
 	}
+
+	maybeRunCliSmoke();
 }
 
 main();

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <unordered_map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -218,7 +219,81 @@ static void walk_resources(const XmlNode& node, std::vector<const XmlNode*>& out
     }
 }
 
+static const XmlNode* select_display(const XmlNode& root, const ResourceXmlExportOptions& options) {
+    const XmlNode* selected = nullptr;
+
+    if (options.display_index) {
+        for (const auto* d : root.childrenNamed("display_info")) {
+            const auto idx = parse_int_loose(node_text(*d, "display_index")).value_or(0);
+            if (idx == *options.display_index) {
+                selected = d;
+                break;
+            }
+        }
+    }
+
+    if (!selected && options.display_name && !options.display_name->empty()) {
+        for (const auto* d : root.childrenNamed("display_info")) {
+            const auto name = node_text(*d, "display_name");
+            if (name && *name == *options.display_name) {
+                selected = d;
+                break;
+            }
+        }
+    }
+
+    if (!selected) {
+        // Default to display 0 (matches fixtures and legacy defaults).
+        for (const auto* d : root.childrenNamed("display_info")) {
+            const auto idx = parse_int_loose(node_text(*d, "display_index")).value_or(0);
+            if (idx == 0) {
+                selected = d;
+                break;
+            }
+        }
+    }
+
+    if (!selected) {
+        // Fall back to first display_info if index isn't present/parseable.
+        selected = root.firstChild("display_info");
+    }
+
+    return selected;
+}
+
+static std::unordered_map<std::string, const XmlNode*> map_theme_to_theme_data(const XmlNode& display_info) {
+    std::unordered_map<std::string, const XmlNode*> out;
+    const auto* theme_info = display_info.firstChild("theme_info");
+    if (!theme_info) return out;
+
+    std::optional<std::string> current_name;
+    for (const auto& c : theme_info->children) {
+        if (c.name == "theme_name") {
+            if (!c.text.empty()) {
+                current_name = c.text;
+            } else {
+                current_name.reset();
+            }
+            continue;
+        }
+        if (c.name == "theme_data") {
+            if (current_name && !current_name->empty()) {
+                out[*current_name] = &c;
+            }
+            continue;
+        }
+    }
+    return out;
+}
+
 ResourceXmlExportResult export_resource_xml_from_gxp(const std::string& gxp_path, const std::string& out_path) {
+    ResourceXmlExportOptions options;
+    return export_resource_xml_from_gxp(gxp_path, out_path, options);
+}
+
+ResourceXmlExportResult export_resource_xml_from_gxp(const std::string& gxp_path,
+                                                     const std::string& out_path,
+                                                     const ResourceXmlExportOptions& options) {
     ResourceXmlExportResult r;
 
     auto parsed = parse_xml_file(gxp_path);
@@ -259,19 +334,7 @@ ResourceXmlExportResult export_resource_xml_from_gxp(const std::string& gxp_path
 
     const int resource_xml_version = std::max(kMinimumResourceXmlVersion, project_version);
 
-    // Pick display 0 (matches most fixtures and legacy defaults).
-    const XmlNode* display = nullptr;
-    for (const auto* d : parsed.doc.root.childrenNamed("display_info")) {
-        const auto idx = parse_int_loose(node_text(*d, "display_index")).value_or(0);
-        if (idx == 0) {
-            display = d;
-            break;
-        }
-    }
-    if (!display) {
-        // Fall back to first display_info if index isn't present/parseable.
-        display = parsed.doc.root.firstChild("display_info");
-    }
+    const XmlNode* display = select_display(parsed.doc.root, options);
     if (!display) {
         r.error = "Missing <display_info>";
         return r;
@@ -307,9 +370,20 @@ ResourceXmlExportResult export_resource_xml_from_gxp(const std::string& gxp_path
     w.writeString("rotation_angle", rotation);
     w.closeTag("display_info");
 
-    // Collect resources from theme_data in display 0.
     std::vector<const XmlNode*> res_nodes;
-    walk_resources(*display, res_nodes);
+    if (options.theme_names.empty()) {
+        // Legacy default: include all themes.
+        walk_resources(*display, res_nodes);
+    } else {
+        // Filtered: include only requested themes.
+        const auto theme_map = map_theme_to_theme_data(*display);
+        for (const auto& t : options.theme_names) {
+            auto it = theme_map.find(t);
+            if (it != theme_map.end() && it->second) {
+                walk_resources(*it->second, res_nodes);
+            }
+        }
+    }
 
     for (const auto* res : res_nodes) {
         const auto type = node_text(*res, "type");

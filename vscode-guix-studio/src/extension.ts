@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { GxpDesignerEditorProvider } from './gxpDesignerEditor';
+import { LATEST_GXP_VERSION, parseGxp } from './gxpModel';
 
 type CliSummary = {
 	project: string | null;
@@ -17,6 +18,30 @@ type CliGenerateResult = {
 	resource_xml?: string;
 	project_name?: string;
 	outputs?: Array<{ kind: string; path: string }>;
+};
+
+type CliStringsExportResult = {
+	ok: boolean;
+	project?: string;
+	output?: string;
+	src?: string;
+	targets?: string[];
+	records?: number;
+	languages?: number;
+	warnings?: string[];
+	error?: string;
+};
+
+type CliStringsImportResult = {
+	ok: boolean;
+	project?: string;
+	input?: string;
+	output?: string;
+	updated_records?: number;
+	added_records?: number;
+	added_languages?: number;
+	warnings?: string[];
+	error?: string;
 };
 
 type GenerateOptions = {
@@ -135,6 +160,8 @@ function findCliCandidateSpecs(extensionContext: vscode.ExtensionContext): Array
 		candidates.push({ candidate: path.join(root, 'tools', 'guix_studio_cli', 'build', 'guix_studio_cli.exe'), source: 'workspace' });
 
 		// Alternative out-of-source build location (from older docs)
+		candidates.push({ candidate: path.join(root, 'build', 'guix_studio_cli_ninja', 'guix_studio_cli'), source: 'workspace' });
+		candidates.push({ candidate: path.join(root, 'build', 'guix_studio_cli_ninja', 'guix_studio_cli.exe'), source: 'workspace' });
 		candidates.push({ candidate: path.join(root, 'build', 'guix_studio_cli', 'guix_studio_cli'), source: 'workspace' });
 		candidates.push({ candidate: path.join(root, 'build', 'guix_studio_cli', 'Debug', 'guix_studio_cli.exe'), source: 'workspace' });
 		candidates.push({ candidate: path.join(root, 'build', 'guix_studio_cli', 'Release', 'guix_studio_cli.exe'), source: 'workspace' });
@@ -161,7 +188,7 @@ function hasPathSeparator(value: string): boolean {
 
 function execFileText(exe: string, args: string[]): Promise<string> {
 	return new Promise((resolve, reject) => {
-		cp.execFile(exe, args, (err, stdout, stderr) => {
+		cp.execFile(exe, args, { timeout: 10_000 }, (err, stdout, stderr) => {
 			if (err) {
 				reject(new Error(`${err.message}\n${stderr}`.trim()));
 				return;
@@ -169,6 +196,58 @@ function execFileText(exe: string, args: string[]): Promise<string> {
 			resolve(String(stdout ?? '').trim());
 		});
 	});
+}
+
+const cliHelpCache = new Map<string, Promise<string | undefined>>();
+async function getCliHelpText(cliPath: string): Promise<string | undefined> {
+	let p = cliHelpCache.get(cliPath);
+	if (!p) {
+		p = (async () => {
+			try {
+				return await execFileText(cliPath, ['help']);
+			} catch {
+				return undefined;
+			}
+		})();
+		cliHelpCache.set(cliPath, p);
+	}
+	return p;
+}
+
+function cliHelpAdvertises(helpText: string | undefined, command: string): boolean {
+	if (!helpText) return false;
+	// Keep it simple: Studio CLI help prints lines like "guix_studio_cli export-strings ...".
+	return helpText.includes(`guix_studio_cli ${command} `) || helpText.includes(`\n  guix_studio_cli ${command} `);
+}
+
+async function ensureCliSupportsCommands(
+	extensionContext: vscode.ExtensionContext,
+	cliPath: string,
+	requiredCommands: string[],
+	interactive: boolean,
+	operationLabel: string
+): Promise<boolean> {
+	const help = await getCliHelpText(cliPath);
+	const missing = requiredCommands.filter((c) => !cliHelpAdvertises(help, c));
+	if (missing.length === 0) return true;
+
+	const output = getOutputChannel();
+	output.appendLine('---');
+	output.appendLine(`CLI at ${cliPath} does not advertise required command(s): ${missing.join(', ')}`);
+
+	if (!interactive) return false;
+	const choice = await vscode.window.showErrorMessage(
+		`${operationLabel} requires a newer GUIX Studio CLI (missing: ${missing.join(', ')}).`,
+		'Build CLI',
+		'Select CLI Path',
+		'Cancel'
+	);
+	if (choice === 'Build CLI') {
+		await vscode.commands.executeCommand('guix.buildCli');
+	} else if (choice === 'Select CLI Path') {
+		await vscode.commands.executeCommand('guix.selectCliPath');
+	}
+	return false;
 }
 
 async function findCliOnPath(): Promise<string | undefined> {
@@ -188,22 +267,54 @@ async function findCliOnPath(): Promise<string | undefined> {
 async function resolveCliPath(extensionContext: vscode.ExtensionContext): Promise<ResolvedCli> {
 	const candidates = findCliCandidateSpecs(extensionContext);
 
+	// Prefer PATH resolution when the user config is a bare name.
 	for (const spec of candidates) {
-		const candidate = spec.candidate;
-		// If the user configured a bare name (no path separators), resolve via PATH.
-		if (!hasPathSeparator(candidate)) {
+		if (!hasPathSeparator(spec.candidate)) {
 			const fromPath = await findCliOnPath();
 			if (fromPath) {
 				return { path: fromPath, source: spec.source, detail: 'via PATH' };
 			}
-			continue;
 		}
+	}
+
+	// Collect all existing file-path candidates and pick the most capable (helps when older binaries are present).
+	const existing: Array<{ spec: { candidate: string; source: CliSource }; index: number }> = [];
+	for (let i = 0; i < candidates.length; i++) {
+		const spec = candidates[i];
+		const candidate = spec.candidate;
+		if (!hasPathSeparator(candidate)) continue;
 		try {
 			await vscode.workspace.fs.stat(vscode.Uri.file(candidate));
-			return { path: candidate, source: spec.source };
+			existing.push({ spec, index: i });
 		} catch {
 			// keep trying
 		}
+	}
+
+	if (existing.length > 0) {
+		let best = existing[0];
+		let bestScore = -1;
+		for (const entry of existing) {
+			const help = await getCliHelpText(entry.spec.candidate);
+			let score = 0;
+			// Basic Phase-1 commands
+			if (cliHelpAdvertises(help, 'summary')) score += 1;
+			if (cliHelpAdvertises(help, 'validate')) score += 1;
+			if (cliHelpAdvertises(help, 'export-resource-xml')) score += 2;
+			if (cliHelpAdvertises(help, 'generate')) score += 2;
+			if (cliHelpAdvertises(help, 'migrate')) score += 1;
+			// Translation workflow commands (prefer these when available)
+			if (cliHelpAdvertises(help, 'export-strings')) score += 4;
+			if (cliHelpAdvertises(help, 'import-strings')) score += 4;
+			if (cliHelpAdvertises(help, 'export-xliff')) score += 4;
+			if (cliHelpAdvertises(help, 'import-xliff')) score += 4;
+
+			if (score > bestScore) {
+				bestScore = score;
+				best = entry;
+			}
+		}
+		return { path: best.spec.candidate, source: best.spec.source };
 	}
 
 	const fromPath = await findCliOnPath();
@@ -373,6 +484,117 @@ function execFileJson<T>(exe: string, args: string[], cwd?: string): Promise<T> 
 	});
 }
 
+async function readTextFile(fsPath: string): Promise<string> {
+	const data = await vscode.workspace.fs.readFile(vscode.Uri.file(fsPath));
+	return new TextDecoder('utf-8').decode(data);
+}
+
+async function tryGetProjectLanguages(gxpPath: string): Promise<string[]> {
+	try {
+		const xml = await readTextFile(gxpPath);
+		const project = parseGxp(xml);
+		return project.languages ?? [];
+	} catch {
+		return [];
+	}
+}
+
+async function ensureProjectWritableOrOfferMigrate(gxpPath: string, operationLabel: string): Promise<boolean> {
+	let projectVersion = 0;
+	try {
+		const xml = await readTextFile(gxpPath);
+		const project = parseGxp(xml);
+		projectVersion = project.projectVersion || 0;
+	} catch {
+		// If we can't parse, don't block the user here; the CLI will report a useful error.
+		return true;
+	}
+
+	const isLegacy = projectVersion > 0 && projectVersion < LATEST_GXP_VERSION;
+	if (!isLegacy) return true;
+
+	const choice = await vscode.window.showWarningMessage(
+		`${operationLabel} is disabled because this project is legacy (v${projectVersion} < ${LATEST_GXP_VERSION}) and is treated as read-only. Migrate the project first.`,
+		'Migrate…',
+		'Cancel'
+	);
+	if (choice === 'Migrate…') {
+		await vscode.commands.executeCommand('guix.migrateProject', gxpPath);
+	}
+	return false;
+}
+
+async function pickCsvFileToOpen(): Promise<string | undefined> {
+	const picked = await vscode.window.showOpenDialog({
+		canSelectMany: false,
+		filters: {
+			'CSV': ['csv'],
+		},
+	});
+	return picked?.[0]?.fsPath;
+}
+
+async function pickXliffFileToOpen(): Promise<string | undefined> {
+	const picked = await vscode.window.showOpenDialog({
+		canSelectMany: false,
+		filters: {
+			'XLIFF': ['xlf', 'xliff'],
+		},
+	});
+	return picked?.[0]?.fsPath;
+}
+
+async function pickStringsExportCsvPath(gxpPath: string): Promise<string | undefined> {
+	const base = path.basename(gxpPath, path.extname(gxpPath));
+	const outDir = resolveConfiguredOutputPath() ?? path.dirname(gxpPath);
+	const defaultOutUri = vscode.Uri.file(path.join(outDir, `${base}.strings.csv`));
+	const picked = await vscode.window.showSaveDialog({
+		title: 'Save strings CSV as…',
+		filters: { 'CSV': ['csv'] },
+		defaultUri: defaultOutUri,
+	});
+	return picked?.fsPath;
+}
+
+async function pickStringsExportXliffPath(gxpPath: string): Promise<string | undefined> {
+	const base = path.basename(gxpPath, path.extname(gxpPath));
+	const outDir = resolveConfiguredOutputPath() ?? path.dirname(gxpPath);
+	const defaultOutUri = vscode.Uri.file(path.join(outDir, `${base}.xlf`));
+	const picked = await vscode.window.showSaveDialog({
+		title: 'Save XLIFF as…',
+		filters: { 'XLIFF': ['xlf', 'xliff'] },
+		defaultUri: defaultOutUri,
+	});
+	return picked?.fsPath;
+}
+
+async function pickLanguageFromProject(title: string, languages: string[]): Promise<string | undefined> {
+	if (languages.length === 0) {
+		return await vscode.window.showInputBox({ prompt: `${title} (enter language name, e.g. English)` });
+	}
+	const picked = await vscode.window.showQuickPick(languages, { title });
+	return picked;
+}
+
+async function pickTargetLanguagesFromProject(title: string, languages: string[], src: string): Promise<string[] | undefined> {
+	const candidates = languages.filter((l) => l !== src);
+	if (candidates.length === 0) {
+		const single = await vscode.window.showInputBox({ prompt: `${title} (comma-separated, e.g. French,German)` });
+		if (!single) return undefined;
+		return single
+			.split(',')
+			.map((s) => s.trim())
+			.filter((s) => s.length > 0);
+	}
+	const picked = await vscode.window.showQuickPick(
+		candidates.map((l) => ({ label: l })),
+		{ title, canPickMany: true }
+	);
+	if (!picked) return undefined;
+	const out = picked.map((p) => p.label).filter((s) => s.length > 0);
+	return out.length > 0 ? out : undefined;
+}
+
 async function readJsonFromUri(uri: vscode.Uri): Promise<any | undefined> {
 	try {
 		const data = await vscode.workspace.fs.readFile(uri);
@@ -405,7 +627,7 @@ async function addVsCodeTasks(): Promise<void> {
 	const tasksUri = vscode.Uri.joinPath(vscodeDir, 'tasks.json');
 
 	const choice = await vscode.window.showInformationMessage(
-		'Add GUIX Studio tasks to .vscode/tasks.json? (validate/generate/export-resource-xml)',
+		'Add GUIX Studio tasks to .vscode/tasks.json? (validate/generate/export-resource-xml/export-strings/export-xliff)',
 		{ modal: true },
 		'Add'
 	);
@@ -446,6 +668,46 @@ async function addVsCodeTasks(): Promise<void> {
 			problemMatcher: [],
 			presentation: { reveal: 'always', panel: 'dedicated' },
 		},
+		{
+			label: 'GUIX: Export strings CSV (active .gxp)',
+			type: 'shell',
+			command: cliCommand,
+			args: [
+				'export-strings',
+				'--project',
+				'${file}',
+				'--output',
+				`${outDir}/${'${fileBasenameNoExtension}'}.strings.csv`,
+				'--src',
+				'English',
+				'--target',
+				'French',
+				'--json',
+			],
+			problemMatcher: [],
+			presentation: { reveal: 'always', panel: 'dedicated' },
+		},
+		{
+			label: 'GUIX: Export XLIFF (active .gxp)',
+			type: 'shell',
+			command: cliCommand,
+			args: [
+				'export-xliff',
+				'--project',
+				'${file}',
+				'--output',
+				`${outDir}/${'${fileBasenameNoExtension}'}.xlf`,
+				'--src',
+				'English',
+				'--target',
+				'French',
+				'--version',
+				'2',
+				'--json',
+			],
+			problemMatcher: [],
+			presentation: { reveal: 'always', panel: 'dedicated' },
+		},
 	];
 
 	const existingLabels = new Set<string>(root.tasks.map((t: any) => (isObject(t) ? t.label : undefined)).filter(Boolean));
@@ -464,6 +726,296 @@ async function addVsCodeTasks(): Promise<void> {
 			: 'GUIX tasks already present in .vscode/tasks.json.'
 	);
 	void vscode.commands.executeCommand('vscode.open', tasksUri);
+}
+
+async function exportStringsCsv(extensionContext: vscode.ExtensionContext, gxpPath: string): Promise<void> {
+	const output = getOutputChannel();
+	output.show(true);
+
+	const resolvedCli = await resolveCliPathSafe(extensionContext, true);
+	if (!resolvedCli) return;
+	const cli = resolvedCli.path;
+	if (!(await ensureCliSupportsCommands(extensionContext, cli, ['export-strings'], true, 'GUIX: Export Strings (CSV)'))) return;
+
+	const languages = await tryGetProjectLanguages(gxpPath);
+	const src = await pickLanguageFromProject('GUIX: Select source language', languages);
+	if (!src) return;
+	const targets = await pickTargetLanguagesFromProject('GUIX: Select target language(s)', languages, src);
+	if (!targets || targets.length === 0) return;
+
+	const outCsv = await pickStringsExportCsvPath(gxpPath);
+	if (!outCsv) return;
+	await ensureDirectoryExists(path.dirname(outCsv));
+
+	await vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Notification, title: 'GUIX: Export Strings (CSV)', cancellable: false },
+		async () => {
+			output.appendLine(`Using CLI: ${cli} (${resolvedCli.source}${resolvedCli.detail ? `, ${resolvedCli.detail}` : ''})`);
+			output.appendLine(`Project: ${gxpPath}`);
+			output.appendLine(`Output: ${outCsv}`);
+			output.appendLine(`src=${src} targets=${targets.join(',')}`);
+
+			let result: CliStringsExportResult;
+			try {
+				result = await execFileJson<CliStringsExportResult>(cli, [
+					'export-strings',
+					'--project',
+					gxpPath,
+					'--output',
+					outCsv,
+					'--src',
+					src,
+					'--targets',
+					targets.join(','),
+					'--json',
+				]);
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				output.appendLine('---');
+				output.appendLine(message);
+				void vscode.window.showErrorMessage('GUIX export-strings failed. See Output: GUIX Studio.');
+				return;
+			}
+
+			output.appendLine('---');
+			if (!result.ok) {
+				output.appendLine(result.error ?? 'export-strings failed');
+				void vscode.window.showErrorMessage('GUIX export-strings failed. See Output: GUIX Studio.');
+				return;
+			}
+			for (const w of result.warnings ?? []) {
+				output.appendLine(`warning: ${w}`);
+			}
+			void vscode.window.showInformationMessage(`Exported strings CSV: ${path.basename(outCsv)}`);
+			void vscode.commands.executeCommand('vscode.open', vscode.Uri.file(outCsv));
+		}
+	);
+}
+
+async function importStringsCsv(extensionContext: vscode.ExtensionContext, gxpPath: string): Promise<void> {
+	const output = getOutputChannel();
+	output.show(true);
+
+	if (!(await ensureProjectWritableOrOfferMigrate(gxpPath, 'GUIX: Import Strings (CSV)'))) return;
+
+	const resolvedCli = await resolveCliPathSafe(extensionContext, true);
+	if (!resolvedCli) return;
+	const cli = resolvedCli.path;
+	if (!(await ensureCliSupportsCommands(extensionContext, cli, ['import-strings'], true, 'GUIX: Import Strings (CSV)'))) return;
+
+	const csvPath = await pickCsvFileToOpen();
+	if (!csvPath) return;
+
+	const choice = await vscode.window.showQuickPick(
+		[
+			{ label: 'Create updated copy', detail: 'Writes <project>.strings_imported.gxp (recommended)', value: 'copy' },
+			{ label: 'Import in place', detail: 'Overwrites the existing .gxp file', value: 'inPlace' },
+		],
+		{ title: 'GUIX: Import Strings (CSV)' }
+	);
+	if (!choice) return;
+
+	// resolvedCli moved earlier to validate command support before prompting for output paths
+
+	let args: string[] = ['import-strings', '--project', gxpPath, '--input', csvPath, '--json'];
+	let outPath: string | undefined;
+	if (choice.value === 'inPlace') {
+		args.push('--in-place');
+		outPath = gxpPath;
+	} else {
+		const defaultOutName = `${path.basename(gxpPath, path.extname(gxpPath))}.strings_imported.gxp`;
+		const defaultOutUri = vscode.Uri.file(path.join(path.dirname(gxpPath), defaultOutName));
+		const picked = await vscode.window.showSaveDialog({
+			title: 'Save updated project as…',
+			filters: { 'GUIX Studio Project': ['gxp'] },
+			defaultUri: defaultOutUri,
+		});
+		if (!picked) return;
+		outPath = picked.fsPath;
+		args.push('--output', outPath);
+	}
+
+	await vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Notification, title: 'GUIX: Import Strings (CSV)', cancellable: false },
+		async () => {
+			output.appendLine(`Using CLI: ${cli} (${resolvedCli.source}${resolvedCli.detail ? `, ${resolvedCli.detail}` : ''})`);
+			output.appendLine(`Project: ${gxpPath}`);
+			output.appendLine(`Input CSV: ${csvPath}`);
+			output.appendLine(`Mode: ${choice.value === 'inPlace' ? 'in-place' : 'copy'}`);
+
+			let result: CliStringsImportResult;
+			try {
+				result = await execFileJson<CliStringsImportResult>(cli, args);
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				output.appendLine('---');
+				output.appendLine(message);
+				void vscode.window.showErrorMessage('GUIX import-strings failed. See Output: GUIX Studio.');
+				return;
+			}
+
+			output.appendLine('---');
+			if (!result.ok) {
+				output.appendLine(result.error ?? 'import-strings failed');
+				void vscode.window.showErrorMessage('GUIX import-strings failed. See Output: GUIX Studio.');
+				return;
+			}
+			for (const w of result.warnings ?? []) {
+				output.appendLine(`warning: ${w}`);
+			}
+
+			const updated = result.updated_records ?? 0;
+			const added = result.added_records ?? 0;
+			const addedLangs = result.added_languages ?? 0;
+			void vscode.window.showInformationMessage(
+				`Imported strings: updated ${updated}, added ${added}, added languages ${addedLangs}.`
+			);
+			if (outPath) {
+				void vscode.window.showTextDocument(vscode.Uri.file(outPath));
+			}
+		}
+	);
+}
+
+async function exportXliff(extensionContext: vscode.ExtensionContext, gxpPath: string): Promise<void> {
+	const output = getOutputChannel();
+	output.show(true);
+
+	const resolvedCli = await resolveCliPathSafe(extensionContext, true);
+	if (!resolvedCli) return;
+	const cli = resolvedCli.path;
+	if (!(await ensureCliSupportsCommands(extensionContext, cli, ['export-xliff'], true, 'GUIX: Export Strings (XLIFF)'))) return;
+
+	const languages = await tryGetProjectLanguages(gxpPath);
+	const src = await pickLanguageFromProject('GUIX: Select source language (XLIFF)', languages);
+	if (!src) return;
+	const target = await pickLanguageFromProject('GUIX: Select target language (XLIFF)', languages.filter((l) => l !== src));
+	if (!target) return;
+
+	const versionPick = await vscode.window.showQuickPick(
+		[
+			{ label: 'XLIFF 2.0', value: '2' },
+			{ label: 'XLIFF 1.2', value: '1' },
+		],
+		{ title: 'GUIX: Select XLIFF version' }
+	);
+	if (!versionPick) return;
+
+	const outXlf = await pickStringsExportXliffPath(gxpPath);
+	if (!outXlf) return;
+	await ensureDirectoryExists(path.dirname(outXlf));
+
+	await vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Notification, title: 'GUIX: Export Strings (XLIFF)', cancellable: false },
+		async () => {
+			output.appendLine(`Using CLI: ${cli} (${resolvedCli.source}${resolvedCli.detail ? `, ${resolvedCli.detail}` : ''})`);
+			output.appendLine(`Project: ${gxpPath}`);
+			output.appendLine(`Output: ${outXlf}`);
+			output.appendLine(`src=${src} target=${target} version=${versionPick.value}`);
+
+			try {
+				await execFileJson<any>(cli, [
+					'export-xliff',
+					'--project',
+					gxpPath,
+					'--output',
+					outXlf,
+					'--src',
+					src,
+					'--target',
+					target,
+					'--version',
+					versionPick.value,
+					'--json',
+				]);
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				output.appendLine('---');
+				output.appendLine(message);
+				void vscode.window.showErrorMessage('GUIX export-xliff failed. See Output: GUIX Studio.');
+				return;
+			}
+
+			void vscode.window.showInformationMessage(`Exported XLIFF: ${path.basename(outXlf)}`);
+			void vscode.commands.executeCommand('vscode.open', vscode.Uri.file(outXlf));
+		}
+	);
+}
+
+async function importXliff(extensionContext: vscode.ExtensionContext, gxpPath: string): Promise<void> {
+	const output = getOutputChannel();
+	output.show(true);
+
+	if (!(await ensureProjectWritableOrOfferMigrate(gxpPath, 'GUIX: Import Strings (XLIFF)'))) return;
+
+	const resolvedCli = await resolveCliPathSafe(extensionContext, true);
+	if (!resolvedCli) return;
+	const cli = resolvedCli.path;
+	if (!(await ensureCliSupportsCommands(extensionContext, cli, ['import-xliff'], true, 'GUIX: Import Strings (XLIFF)'))) return;
+
+	const xlfPath = await pickXliffFileToOpen();
+	if (!xlfPath) return;
+
+	const choice = await vscode.window.showQuickPick(
+		[
+			{ label: 'Create updated copy', detail: 'Writes <project>.xliff_imported.gxp (recommended)', value: 'copy' },
+			{ label: 'Import in place', detail: 'Overwrites the existing .gxp file', value: 'inPlace' },
+		],
+		{ title: 'GUIX: Import Strings (XLIFF)' }
+	);
+	if (!choice) return;
+
+	// resolvedCli moved earlier to validate command support before prompting for output paths
+
+	let args: string[] = ['import-xliff', '--project', gxpPath, '--input', xlfPath, '--json'];
+	let outPath: string | undefined;
+	if (choice.value === 'inPlace') {
+		args.push('--in-place');
+		outPath = gxpPath;
+	} else {
+		const defaultOutName = `${path.basename(gxpPath, path.extname(gxpPath))}.xliff_imported.gxp`;
+		const defaultOutUri = vscode.Uri.file(path.join(path.dirname(gxpPath), defaultOutName));
+		const picked = await vscode.window.showSaveDialog({
+			title: 'Save updated project as…',
+			filters: { 'GUIX Studio Project': ['gxp'] },
+			defaultUri: defaultOutUri,
+		});
+		if (!picked) return;
+		outPath = picked.fsPath;
+		args.push('--output', outPath);
+	}
+
+	await vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Notification, title: 'GUIX: Import Strings (XLIFF)', cancellable: false },
+		async () => {
+			output.appendLine(`Using CLI: ${cli} (${resolvedCli.source}${resolvedCli.detail ? `, ${resolvedCli.detail}` : ''})`);
+			output.appendLine(`Project: ${gxpPath}`);
+			output.appendLine(`Input XLIFF: ${xlfPath}`);
+			output.appendLine(`Mode: ${choice.value === 'inPlace' ? 'in-place' : 'copy'}`);
+
+			let result: any;
+			try {
+				result = await execFileJson<any>(cli, args);
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				output.appendLine('---');
+				output.appendLine(message);
+				void vscode.window.showErrorMessage('GUIX import-xliff failed. See Output: GUIX Studio.');
+				return;
+			}
+
+			output.appendLine('---');
+			if (result && result.ok === false) {
+				output.appendLine(result.error ?? 'import-xliff failed');
+				void vscode.window.showErrorMessage('GUIX import-xliff failed. See Output: GUIX Studio.');
+				return;
+			}
+			void vscode.window.showInformationMessage('Imported XLIFF into project.');
+			if (outPath) {
+				void vscode.window.showTextDocument(vscode.Uri.file(outPath));
+			}
+		}
+	);
 }
 
 async function pickGxpFile(): Promise<string | undefined> {
@@ -1039,6 +1591,34 @@ export function activate(context: vscode.ExtensionContext): void {
 			output.appendLine(`CLI: ${resolvedCli.path}`);
 			output.appendLine(`Source: ${detail}`);
 
+			try {
+				const ver = (await execFileText(resolvedCli.path, ['--version'])).trim();
+				if (ver) output.appendLine(`Version: ${ver}`);
+			} catch {
+				// ignore
+			}
+
+			const help = await getCliHelpText(resolvedCli.path);
+			if (help) {
+				const important = [
+					'summary',
+					'validate',
+					'migrate',
+					'export-resource-xml',
+					'generate',
+					'export-strings',
+					'import-strings',
+					'export-xliff',
+					'import-xliff',
+				];
+				const supported = important.filter((c) => cliHelpAdvertises(help, c));
+				const missing = important.filter((c) => !cliHelpAdvertises(help, c));
+				output.appendLine(`Advertised commands: ${supported.join(', ') || '<none>'}`);
+				if (missing.length > 0) output.appendLine(`Not advertised: ${missing.join(', ')}`);
+			} else {
+				output.appendLine('Note: unable to run CLI help to detect capabilities.');
+			}
+
 			const choice = await vscode.window.showInformationMessage(
 				`GUIX CLI: ${resolvedCli.path} (${detail})`,
 				'Copy Path',
@@ -1124,6 +1704,46 @@ export function activate(context: vscode.ExtensionContext): void {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('guix.refreshProjects', () => {
 			projectsProvider.refresh();
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('guix.exportStringsCsv', async (arg?: unknown) => {
+			const fromArg = coercePathArg(arg);
+			const active = vscode.window.activeTextEditor?.document?.fileName;
+			const gxp = fromArg ?? (active?.toLowerCase().endsWith('.gxp') ? active : await pickGxpFile());
+			if (!gxp) return;
+			await exportStringsCsv(context, gxp);
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('guix.importStringsCsv', async (arg?: unknown) => {
+			const fromArg = coercePathArg(arg);
+			const active = vscode.window.activeTextEditor?.document?.fileName;
+			const gxp = fromArg ?? (active?.toLowerCase().endsWith('.gxp') ? active : await pickGxpFile());
+			if (!gxp) return;
+			await importStringsCsv(context, gxp);
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('guix.exportXliff', async (arg?: unknown) => {
+			const fromArg = coercePathArg(arg);
+			const active = vscode.window.activeTextEditor?.document?.fileName;
+			const gxp = fromArg ?? (active?.toLowerCase().endsWith('.gxp') ? active : await pickGxpFile());
+			if (!gxp) return;
+			await exportXliff(context, gxp);
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('guix.importXliff', async (arg?: unknown) => {
+			const fromArg = coercePathArg(arg);
+			const active = vscode.window.activeTextEditor?.document?.fileName;
+			const gxp = fromArg ?? (active?.toLowerCase().endsWith('.gxp') ? active : await pickGxpFile());
+			if (!gxp) return;
+			await importXliff(context, gxp);
 		})
 	);
 

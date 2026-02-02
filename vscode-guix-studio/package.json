@@ -68,6 +68,22 @@
       {
         "command": "guix.buildCli",
         "title": "GUIX: Build CLI (CMake)"
+      },
+      {
+        "command": "guix.exportStringsCsv",
+        "title": "GUIX: Export Strings (CSV)"
+      },
+      {
+        "command": "guix.importStringsCsv",
+        "title": "GUIX: Import Strings (CSV)"
+      },
+      {
+        "command": "guix.exportXliff",
+        "title": "GUIX: Export Strings (XLIFF)"
+      },
+      {
+        "command": "guix.importXliff",
+        "title": "GUIX: Import Strings (XLIFF)"
       }
     ],
     "viewsContainers": {
@@ -114,6 +130,26 @@
         },
         {
           "command": "guix.generateOutputs",
+          "when": "view == guixProjects && viewItem == guixGxp",
+          "group": "inline"
+        },
+        {
+          "command": "guix.exportStringsCsv",
+          "when": "view == guixProjects && viewItem == guixGxp",
+          "group": "inline"
+        },
+        {
+          "command": "guix.importStringsCsv",
+          "when": "view == guixProjects && viewItem == guixGxp",
+          "group": "inline"
+        },
+        {
+          "command": "guix.exportXliff",
+          "when": "view == guixProjects && viewItem == guixGxp",
+          "group": "inline"
+        },
+        {
+          "command": "guix.importXliff",
           "when": "view == guixProjects && viewItem == guixGxp",
           "group": "inline"
         }

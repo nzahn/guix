@@ -14,8 +14,20 @@ endif()
 file(REMOVE_RECURSE "${OUT_DIR}")
 file(MAKE_DIRECTORY "${OUT_DIR}")
 
+set(cmd "${GUIX_STUDIO_CLI}" generate --project "${GUIX_PROJECT}" --output_path "${OUT_DIR}" --json)
+
+if(DEFINED DISPLAY_FILTERS AND NOT "${DISPLAY_FILTERS}" STREQUAL "")
+  list(APPEND cmd --display "${DISPLAY_FILTERS}")
+endif()
+if(DEFINED THEME_FILTERS AND NOT "${THEME_FILTERS}" STREQUAL "")
+  list(APPEND cmd --theme "${THEME_FILTERS}")
+endif()
+if(DEFINED LANGUAGE_FILTERS AND NOT "${LANGUAGE_FILTERS}" STREQUAL "")
+  list(APPEND cmd --language "${LANGUAGE_FILTERS}")
+endif()
+
 execute_process(
-  COMMAND "${GUIX_STUDIO_CLI}" generate --project "${GUIX_PROJECT}" --output_path "${OUT_DIR}" --json
+  COMMAND ${cmd}
   RESULT_VARIABLE rv
   OUTPUT_VARIABLE out
   ERROR_VARIABLE err

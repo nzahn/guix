@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -11,10 +12,15 @@
 #include "studio_core/gxp_project.h"
 #include "studio_core/resource_project.h"
 #include "studio_core/resource_xml_export.h"
+#include "studio_core/strings_csv.h"
+#include "studio_core/strings_xliff.h"
 #include "studio_core/xml_dom.h"
 #include "studio_core/xml_writer.h"
 
 namespace {
+
+std::optional<std::string> arg_value_any(const std::vector<std::string>& args, const std::vector<std::string>& flags);
+bool has_flag_any(const std::vector<std::string>& args, const std::vector<std::string>& flags);
 
 constexpr const char* kVersion = "0.1.0";
 
@@ -26,6 +32,33 @@ struct ProjectHeader {
 };
 
 constexpr int kMinimumResourceXmlVersion = 56; // PROJECT_VERSION_INITIAL_RESOURCE_XML
+
+std::string trim_copy(std::string s) {
+    const auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
+    while (!s.empty() && is_space(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
+    while (!s.empty() && is_space(static_cast<unsigned char>(s.back()))) s.pop_back();
+    return s;
+}
+
+std::vector<std::string> split_csv_list(const std::optional<std::string>& s) {
+    std::vector<std::string> out;
+    if (!s || s->empty()) return out;
+
+    std::string cur;
+    for (char c : *s) {
+        if (c == ',') {
+            auto t = trim_copy(cur);
+            if (!t.empty()) out.push_back(t);
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
+    }
+    auto t = trim_copy(cur);
+    if (!t.empty()) out.push_back(t);
+
+    return out;
+}
 
 ProjectHeader parse_project_header(const std::string& gxp_path) {
     ProjectHeader header;
@@ -85,12 +118,283 @@ void print_usage(std::ostream& os) {
 
     os << "  guix_studio_cli migrate --project <path.gxp> [--output <path.gxp> | --in-place] [--json]\n\n";
 
-    os << "  guix_studio_cli export-resource-xml --project <path.gxp> [--output_path <dir>] [--json]\n";
-    os << "  guix_studio_cli generate --project <path.gxp> [--output_path <dir>] [--json]\n\n";
+    os << "  guix_studio_cli export-resource-xml --project <path.gxp> [--output_path <dir>] [--display/-d <name>] [--theme/-t <name,name,...>] [--json]\n";
+    os << "  guix_studio_cli generate --project <path.gxp> [--output_path <dir>] [--resource/-r [base]] [--specification/-s [base]] [--binary/-b]";
+    os << " [--display/-d <name>] [--theme/-t <name,name,...>] [--language/-l <name,name,...>] [--json]\n";
+    os << "  guix_studio_cli generate --xml/-x <path.resource.xml> [--output_path <dir>] [--binary/-b] [--big_endian] [--no_res_header] [--json]\n\n";
+
+    os << "  guix_studio_cli export-strings --project <path.gxp> --output <path.csv> --src <lang> [--target <lang> | --targets <lang,lang,...>] [--json]\n";
+    os << "  guix_studio_cli import-strings --project <path.gxp> --input <path.csv> [--output <path.gxp> | --in-place] [--json]\n\n";
+
+    os << "  guix_studio_cli export-xliff --project <path.gxp> --output <path.xlf> --src <lang> --target <lang> [--version 1|2] [--json]\n";
+    os << "  guix_studio_cli import-xliff --project <path.gxp> --input <path.xlf> [--output <path.gxp> | --in-place] [--json]\n\n";
     os << "Notes:\n";
     os << "  - This is NOT a full replacement for the legacy Studio generator yet.\n";
     os << "  - Phase 1 generation currently exports a minimal resource-project XML only.\n";
     os << "  - Future phases will implement Studio-compatible C/spec/bin/srec outputs.\n";
+}
+
+int cmd_export_xliff(const std::vector<std::string>& args) {
+    const auto project = arg_value_any(args, {"--project", "-p"});
+    if (!project) {
+        std::cerr << "Missing required flag: --project/-p\n";
+        return 2;
+    }
+
+    const auto output = arg_value_any(args, {"--output"});
+    if (!output) {
+        std::cerr << "Missing required flag: --output\n";
+        return 2;
+    }
+
+    const auto src = arg_value_any(args, {"--src"});
+    if (!src) {
+        std::cerr << "Missing required flag: --src\n";
+        return 2;
+    }
+
+    const auto target = arg_value_any(args, {"--target"});
+    if (!target) {
+        std::cerr << "Missing required flag: --target\n";
+        return 2;
+    }
+
+    const auto version = parse_int(arg_value_any(args, {"--version"})).value_or(2);
+    const bool json = has_flag_any(args, {"--json"});
+
+    const auto res = studio_core::export_strings_xliff_from_gxp(*project, *output, *src, *target, version);
+    if (!res.ok) {
+        if (json) {
+            std::cout << "{\"ok\":false,\"error\":\"" << json_escape(res.error) << "\"}";
+            std::cout << "\n";
+            return 1;
+        }
+        std::cerr << res.error << "\n";
+        return 1;
+    }
+
+    if (json) {
+        std::cout << "{\"ok\":true";
+        std::cout << ",\"project\":\"" << json_escape(*project) << "\"";
+        std::cout << ",\"output\":\"" << json_escape(*output) << "\"";
+        std::cout << ",\"units\":" << res.unit_count;
+        std::cout << ",\"warnings\":[";
+        for (size_t i = 0; i < res.warnings.size(); ++i) {
+            if (i) std::cout << ",";
+            std::cout << "\"" << json_escape(res.warnings[i]) << "\"";
+        }
+        std::cout << "]}";
+        std::cout << "\n";
+        return 0;
+    }
+
+    std::cout << "Wrote XLIFF: " << *output << "\n";
+    return 0;
+}
+
+int cmd_import_xliff(const std::vector<std::string>& args) {
+    const auto project = arg_value_any(args, {"--project", "-p"});
+    if (!project) {
+        std::cerr << "Missing required flag: --project/-p\n";
+        return 2;
+    }
+
+    const auto input = arg_value_any(args, {"--input", "-i"});
+    if (!input) {
+        std::cerr << "Missing required flag: --input/-i\n";
+        return 2;
+    }
+
+    const bool json = has_flag_any(args, {"--json"});
+    const bool in_place = has_flag_any(args, {"--in-place"});
+    const auto output_arg = arg_value_any(args, {"--output"});
+
+    if (in_place && output_arg) {
+        std::cerr << "Use only one of --output or --in-place\n";
+        return 2;
+    }
+
+    std::filesystem::path out_path;
+    if (in_place) {
+        out_path = std::filesystem::path(*project);
+    } else if (output_arg) {
+        out_path = std::filesystem::path(*output_arg);
+    } else {
+        std::filesystem::path in_path(*project);
+        out_path = in_path;
+        out_path.replace_filename(in_path.stem().string() + ".xliff_imported" + in_path.extension().string());
+    }
+
+    const auto res = studio_core::import_strings_xliff_to_gxp(*project, *input, out_path.string());
+    if (!res.ok) {
+        if (json) {
+            std::cout << "{\"ok\":false,\"error\":\"" << json_escape(res.error) << "\"}";
+            std::cout << "\n";
+            return 1;
+        }
+        std::cerr << res.error << "\n";
+        return 1;
+    }
+
+    if (json) {
+        std::cout << "{\"ok\":true";
+        std::cout << ",\"project\":\"" << json_escape(*project) << "\"";
+        std::cout << ",\"input\":\"" << json_escape(*input) << "\"";
+        std::cout << ",\"output\":\"" << json_escape(out_path.string()) << "\"";
+        std::cout << ",\"updated_records\":" << res.updated_records;
+        std::cout << ",\"added_records\":" << res.added_records;
+        std::cout << ",\"added_languages\":" << res.added_languages;
+        std::cout << ",\"warnings\":[";
+        for (size_t i = 0; i < res.warnings.size(); ++i) {
+            if (i) std::cout << ",";
+            std::cout << "\"" << json_escape(res.warnings[i]) << "\"";
+        }
+        std::cout << "]}";
+        std::cout << "\n";
+        return 0;
+    }
+
+    std::cout << "Wrote updated project: " << out_path.string() << "\n";
+    return 0;
+}
+
+int cmd_export_strings(const std::vector<std::string>& args) {
+    const auto project = arg_value_any(args, {"--project", "-p"});
+    if (!project) {
+        std::cerr << "Missing required flag: --project/-p\n";
+        return 2;
+    }
+
+    const auto output = arg_value_any(args, {"--output"});
+    if (!output) {
+        std::cerr << "Missing required flag: --output\n";
+        return 2;
+    }
+
+    const auto src = arg_value_any(args, {"--src"});
+    if (!src) {
+        std::cerr << "Missing required flag: --src\n";
+        return 2;
+    }
+
+    std::vector<std::string> targets;
+    if (const auto target = arg_value_any(args, {"--target"})) {
+        targets.push_back(*target);
+    }
+    if (const auto targets_csv = arg_value_any(args, {"--targets"})) {
+        for (const auto& s : split_csv_list(targets_csv)) {
+            if (!s.empty()) targets.push_back(s);
+        }
+    }
+
+    if (targets.empty()) {
+        std::cerr << "Missing required flag: --target or --targets\n";
+        return 2;
+    }
+
+    const bool json = has_flag_any(args, {"--json"});
+    const auto res = studio_core::export_strings_csv_from_gxp(*project, *output, *src, targets);
+    if (!res.ok) {
+        if (json) {
+            std::cout << "{\"ok\":false,\"error\":\"" << json_escape(res.error) << "\"}";
+            std::cout << "\n";
+            return 1;
+        }
+        std::cerr << res.error << "\n";
+        return 1;
+    }
+
+    if (json) {
+        std::cout << "{\"ok\":true";
+        std::cout << ",\"project\":\"" << json_escape(*project) << "\"";
+        std::cout << ",\"output\":\"" << json_escape(*output) << "\"";
+        std::cout << ",\"src\":\"" << json_escape(*src) << "\"";
+        std::cout << ",\"targets\":[";
+        for (size_t i = 0; i < targets.size(); ++i) {
+            if (i) std::cout << ",";
+            std::cout << "\"" << json_escape(targets[i]) << "\"";
+        }
+        std::cout << "]";
+        std::cout << ",\"records\":" << res.record_count;
+        std::cout << ",\"languages\":" << res.language_count;
+        std::cout << ",\"warnings\":[";
+        for (size_t i = 0; i < res.warnings.size(); ++i) {
+            if (i) std::cout << ",";
+            std::cout << "\"" << json_escape(res.warnings[i]) << "\"";
+        }
+        std::cout << "]}";
+        std::cout << "\n";
+        return 0;
+    }
+
+    std::cout << "Wrote strings CSV: " << *output << "\n";
+    return 0;
+}
+
+int cmd_import_strings(const std::vector<std::string>& args) {
+    const auto project = arg_value_any(args, {"--project", "-p"});
+    if (!project) {
+        std::cerr << "Missing required flag: --project/-p\n";
+        return 2;
+    }
+
+    const auto input = arg_value_any(args, {"--input", "-i"});
+    if (!input) {
+        std::cerr << "Missing required flag: --input/-i\n";
+        return 2;
+    }
+
+    const bool json = has_flag_any(args, {"--json"});
+    const bool in_place = has_flag_any(args, {"--in-place"});
+    const auto output_arg = arg_value_any(args, {"--output"});
+
+    if (in_place && output_arg) {
+        std::cerr << "Use only one of --output or --in-place\n";
+        return 2;
+    }
+
+    std::filesystem::path out_path;
+    if (in_place) {
+        out_path = std::filesystem::path(*project);
+    } else if (output_arg) {
+        out_path = std::filesystem::path(*output_arg);
+    } else {
+        std::filesystem::path in_path(*project);
+        out_path = in_path;
+        out_path.replace_filename(in_path.stem().string() + ".strings_imported" + in_path.extension().string());
+    }
+
+    const auto res = studio_core::import_strings_csv_to_gxp(*project, *input, out_path.string());
+    if (!res.ok) {
+        if (json) {
+            std::cout << "{\"ok\":false,\"error\":\"" << json_escape(res.error) << "\"}";
+            std::cout << "\n";
+            return 1;
+        }
+        std::cerr << res.error << "\n";
+        return 1;
+    }
+
+    if (json) {
+        std::cout << "{\"ok\":true";
+        std::cout << ",\"project\":\"" << json_escape(*project) << "\"";
+        std::cout << ",\"input\":\"" << json_escape(*input) << "\"";
+        std::cout << ",\"output\":\"" << json_escape(out_path.string()) << "\"";
+        std::cout << ",\"updated_records\":" << res.updated_records;
+        std::cout << ",\"added_records\":" << res.added_records;
+        std::cout << ",\"added_languages\":" << res.added_languages;
+        std::cout << ",\"warnings\":[";
+        for (size_t i = 0; i < res.warnings.size(); ++i) {
+            if (i) std::cout << ",";
+            std::cout << "\"" << json_escape(res.warnings[i]) << "\"";
+        }
+        std::cout << "]}";
+        std::cout << "\n";
+        return 0;
+    }
+
+    std::cout << "Wrote updated project: " << out_path.string() << "\n";
+    return 0;
 }
 
 std::optional<std::string> arg_value(const std::vector<std::string>& args, const std::string& flag) {
@@ -126,6 +430,36 @@ bool has_flag_any(const std::vector<std::string>& args, const std::vector<std::s
         }
     }
     return false;
+}
+
+struct FlagOptArg {
+    bool present = false;
+    std::optional<std::string> value;
+};
+
+// Returns whether a flag is present, and an optional value if the next token is not another flag.
+// This matches legacy Studio behavior where `-r -s` is valid and implies default filenames.
+FlagOptArg flag_optional_value_any(const std::vector<std::string>& args, const std::vector<std::string>& flags) {
+    for (const auto& f : flags) {
+        for (size_t i = 0; i < args.size(); i++) {
+            if (args[i] != f) continue;
+
+            FlagOptArg r;
+            r.present = true;
+            if (i + 1 < args.size()) {
+                const auto& next = args[i + 1];
+                if (!next.empty() && next[0] != '-') {
+                    r.value = next;
+                }
+            }
+            return r;
+        }
+    }
+    return {};
+}
+
+static bool has_extension(const std::filesystem::path& p) {
+    return p.has_extension() && !p.extension().string().empty();
 }
 
 int cmd_migrate(const std::vector<std::string>& args) {
@@ -235,6 +569,8 @@ int cmd_export_resource_xml(const std::vector<std::string>& args) {
     }
 
     const auto output_path_arg = arg_value(args, "--output_path");
+    const auto display_arg = arg_value_any(args, {"--display", "-d"});
+    const auto theme_arg = arg_value_any(args, {"--theme", "-t"});
     const bool json = has_flag(args, "--json");
 
     const auto header = parse_project_header(*project);
@@ -256,7 +592,15 @@ int cmd_export_resource_xml(const std::vector<std::string>& args) {
 
     const std::filesystem::path out_file = out_dir / (header.project_name.value() + ".resource.xml");
 
-    const auto exported = studio_core::export_resource_xml_from_gxp(*project, out_file.string());
+    studio_core::ResourceXmlExportOptions opts;
+    if (display_arg && !display_arg->empty()) {
+        opts.display_name = *display_arg;
+    }
+    if (theme_arg && !theme_arg->empty()) {
+        opts.theme_names = split_csv_list(theme_arg);
+    }
+
+    const auto exported = studio_core::export_resource_xml_from_gxp(*project, out_file.string(), opts);
     if (!exported.ok) {
         if (json) {
             std::cout << "{\"ok\":false,\"error\":\"" << json_escape(exported.error) << "\"}";
@@ -294,15 +638,32 @@ int cmd_generate(const std::vector<std::string>& args) {
     const auto output_path_arg = arg_value_any(args, {"--output_path"});
     const bool json = has_flag_any(args, {"--json"});
 
-    const auto resource_out = arg_value_any(args, {"--resource", "-r"});
-    const auto spec_out = arg_value_any(args, {"--specification", "-s"});
+    const auto resource_flag = flag_optional_value_any(args, {"--resource", "-r"});
+    const auto spec_flag = flag_optional_value_any(args, {"--specification", "-s"});
+
+    const bool gen_resource = resource_flag.present;
+    const bool gen_specification = spec_flag.present;
     const bool binary = has_flag_any(args, {"--binary", "-b"});
     const bool big_endian = has_flag_any(args, {"--big_endian"});
     const bool no_res_header = has_flag_any(args, {"--no_res_header"});
 
+    const auto display_arg = arg_value_any(args, {"--display", "-d"});
+    const auto theme_arg = arg_value_any(args, {"--theme", "-t"});
+    const auto language_arg = arg_value_any(args, {"--language", "-l"});
+
+    const auto display_filters = split_csv_list(display_arg);
+    const auto theme_filters = split_csv_list(theme_arg);
+    const auto language_filters = split_csv_list(language_arg);
+
+    std::vector<std::string> warnings;
+
     if (!project && !xml_in) {
         std::cerr << "Missing required flag: --project/-p or --xml/-x\n";
         return 2;
+    }
+
+    if (xml_in && (!display_filters.empty() || !theme_filters.empty() || !language_filters.empty())) {
+        warnings.push_back("--display/--theme/--language are ignored when using --xml input");
     }
 
     // Resolve output dir.
@@ -351,7 +712,132 @@ int cmd_generate(const std::vector<std::string>& args) {
     }
 
     // Phase 1 default behavior: if no specific outputs requested, behave like before and emit resource XML.
-    const bool any_requested = (resource_out.has_value() || spec_out.has_value() || binary);
+    const bool any_requested = (gen_resource || gen_specification || binary);
+
+    // Validate selection filters (best-effort, only when a .gxp is provided).
+    std::optional<std::string> selected_display_name;
+    std::vector<std::string> selected_theme_names;
+    std::vector<std::string> selected_language_names;
+    if (project) {
+        auto parsed = studio_core::parse_xml_file(*project);
+        if (!parsed.ok) {
+            std::cerr << parsed.error << "\n";
+            return 1;
+        }
+        {
+            auto mig = studio_core::migrate_gxp_to_latest(parsed.doc);
+            if (!mig.ok) {
+                warnings.push_back("Migration failed: " + mig.error);
+            } else {
+                for (const auto& w : mig.warnings) warnings.push_back(w);
+            }
+        }
+
+        // Collect known languages.
+        std::vector<std::string> known_languages;
+        if (const auto* header = parsed.doc.root.firstChild("header")) {
+            if (const auto* ln = header->firstChild("language_names")) {
+                for (const auto& c : ln->children) {
+                    if (c.name == "language" && !c.text.empty()) {
+                        known_languages.push_back(c.text);
+                    }
+                }
+            }
+        }
+
+        // Validate language filters.
+        if (!language_filters.empty()) {
+            for (const auto& l : language_filters) {
+                bool found = false;
+                for (const auto& k : known_languages) {
+                    if (k == l) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    std::cerr << "Unknown language: " << l << "\n";
+                    return 2;
+                }
+            }
+            selected_language_names = language_filters;
+        }
+
+        // Collect displays and pick selected display.
+        std::vector<std::string> known_displays;
+        const studio_core::XmlNode* selected_display = nullptr;
+        for (const auto* d : parsed.doc.root.childrenNamed("display_info")) {
+            const auto dn = studio_core::node_text(*d, "display_name");
+            if (dn && !dn->empty()) {
+                known_displays.push_back(*dn);
+            }
+        }
+
+        if (!display_filters.empty()) {
+            // Phase 1: only one display is materialized in resource XML; use first.
+            if (display_filters.size() > 1) {
+                warnings.push_back("Phase 1: only one display is supported; using the first entry from --display");
+            }
+            selected_display_name = display_filters.front();
+
+            for (const auto* d : parsed.doc.root.childrenNamed("display_info")) {
+                const auto dn = studio_core::node_text(*d, "display_name");
+                if (dn && *dn == *selected_display_name) {
+                    selected_display = d;
+                    break;
+                }
+            }
+            if (!selected_display) {
+                std::cerr << "Unknown display: " << *selected_display_name << "\n";
+                return 2;
+            }
+        } else {
+            // Default to display_index==0 like export_resource_xml.
+            for (const auto* d : parsed.doc.root.childrenNamed("display_info")) {
+                const auto idx = studio_core::node_int(*d, "display_index");
+                if (idx && *idx == 0) {
+                    selected_display = d;
+                    const auto dn = studio_core::node_text(*d, "display_name");
+                    if (dn && !dn->empty()) selected_display_name = *dn;
+                    break;
+                }
+            }
+            if (!selected_display) {
+                selected_display = parsed.doc.root.firstChild("display_info");
+                if (selected_display) {
+                    const auto dn = studio_core::node_text(*selected_display, "display_name");
+                    if (dn && !dn->empty()) selected_display_name = *dn;
+                }
+            }
+        }
+
+        // Validate themes within selected display.
+        if (selected_display && !theme_filters.empty()) {
+            std::vector<std::string> known_themes;
+            if (const auto* ti = selected_display->firstChild("theme_info")) {
+                for (const auto& c : ti->children) {
+                    if (c.name == "theme_name" && !c.text.empty()) {
+                        known_themes.push_back(c.text);
+                    }
+                }
+            }
+
+            for (const auto& t : theme_filters) {
+                bool found = false;
+                for (const auto& k : known_themes) {
+                    if (k == t) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    std::cerr << "Unknown theme: " << t << "\n";
+                    return 2;
+                }
+            }
+            selected_theme_names = theme_filters;
+        }
+    }
 
     struct PlannedOutput {
         std::string kind;
@@ -364,10 +850,17 @@ int cmd_generate(const std::vector<std::string>& args) {
         // We need a resource XML (either explicitly requested or as input for binary generation, or for backward-compatible behavior).
         const std::filesystem::path out_file = out_dir / (*project_name + ".resource.xml");
         if (project) {
-            const auto exported = studio_core::export_resource_xml_from_gxp(*project, out_file.string());
+            studio_core::ResourceXmlExportOptions opts;
+            if (selected_display_name) opts.display_name = *selected_display_name;
+            opts.theme_names = selected_theme_names;
+
+            const auto exported = studio_core::export_resource_xml_from_gxp(*project, out_file.string(), opts);
             if (!exported.ok) {
                 std::cerr << exported.error << "\n";
                 return 1;
+            }
+            for (const auto& w : exported.warnings) {
+                warnings.push_back(w);
             }
         } else {
             // No .gxp available; fall back to a minimal resource XML.
@@ -419,23 +912,37 @@ int cmd_generate(const std::vector<std::string>& args) {
         outputs.push_back({"resource_xml", resource_xml_path});
     }
 
-    // Resource/spec outputs are file-path arguments in legacy Studio.
-    if (resource_out) {
-        std::filesystem::path p(*resource_out);
+    // Resource/spec outputs are legacy flags with optional base names.
+    if (gen_resource) {
+        const std::string base = resource_flag.value.value_or(*project_name + "_resources");
+        std::filesystem::path p(base);
         if (p.is_relative()) {
             p = out_dir / p;
         }
-        outputs.push_back({"resource_c", p});
+
+        if (has_extension(p)) {
+            outputs.push_back({"resource", p});
+        } else {
+            outputs.push_back({"resource_c", std::filesystem::path(p.string() + ".c")});
+            outputs.push_back({"resource_h", std::filesystem::path(p.string() + ".h")});
+        }
     } else if (!any_requested) {
         // If user didn't request anything, keep Phase 1 behavior (resource XML only).
     }
 
-    if (spec_out) {
-        std::filesystem::path p(*spec_out);
+    if (gen_specification) {
+        const std::string base = spec_flag.value.value_or(*project_name + "_specifications");
+        std::filesystem::path p(base);
         if (p.is_relative()) {
             p = out_dir / p;
         }
-        outputs.push_back({"specification", p});
+
+        if (has_extension(p)) {
+            outputs.push_back({"specification", p});
+        } else {
+            outputs.push_back({"specification_c", std::filesystem::path(p.string() + ".c")});
+            outputs.push_back({"specification_h", std::filesystem::path(p.string() + ".h")});
+        }
     }
 
     if (binary) {
@@ -454,11 +961,11 @@ int cmd_generate(const std::vector<std::string>& args) {
             return 2;
         }
 
-        if (o.kind == "resource_c") {
+        if (o.kind == "resource" || o.kind == "resource_c" || o.kind == "resource_h") {
             f << "/* Phase 1 stub: resource C output not implemented yet. */\n";
             f << "/* Project: " << *project_name << " */\n";
             f << "/* Generated from: " << (project ? *project : resource_xml_path.string()) << " */\n";
-        } else if (o.kind == "specification") {
+        } else if (o.kind == "specification" || o.kind == "specification_c" || o.kind == "specification_h") {
             f << "# Phase 1 stub: specification output not implemented yet\n";
             f << "project: " << *project_name << "\n";
         } else if (o.kind == "binary") {
@@ -477,6 +984,30 @@ int cmd_generate(const std::vector<std::string>& args) {
         if (!resource_xml_path.empty()) {
             std::cout << ",\"resource_xml\":\"" << json_escape(resource_xml_path.string()) << "\"";
         }
+
+        std::cout << ",\"filters\":{";
+        auto emit_list = [&](const char* key, const std::vector<std::string>& vals) {
+            std::cout << "\"" << key << "\":[";
+            for (size_t i = 0; i < vals.size(); ++i) {
+                if (i) std::cout << ",";
+                std::cout << "\"" << json_escape(vals[i]) << "\"";
+            }
+            std::cout << "]";
+        };
+        emit_list("display", display_filters);
+        std::cout << ",";
+        emit_list("theme", theme_filters);
+        std::cout << ",";
+        emit_list("language", language_filters);
+        std::cout << "}";
+
+        std::cout << ",\"warnings\":[";
+        for (size_t i = 0; i < warnings.size(); ++i) {
+            if (i) std::cout << ",";
+            std::cout << "\"" << json_escape(warnings[i]) << "\"";
+        }
+        std::cout << "]";
+
         std::cout << ",\"outputs\":[";
         for (size_t i = 0; i < outputs.size(); ++i) {
             if (i) std::cout << ",";
@@ -679,6 +1210,22 @@ int main(int argc, char** argv) {
 
     if (command == "generate") {
         return cmd_generate(rest);
+    }
+
+    if (command == "export-strings") {
+        return cmd_export_strings(rest);
+    }
+
+    if (command == "import-strings") {
+        return cmd_import_strings(rest);
+    }
+
+    if (command == "export-xliff") {
+        return cmd_export_xliff(rest);
+    }
+
+    if (command == "import-xliff") {
+        return cmd_import_xliff(rest);
     }
 
     std::cerr << "Unknown command: " << command << "\n\n";

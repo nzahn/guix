@@ -44,6 +44,13 @@ cmake_ninja_workdir = /Users/nzahn/Documents/GitHub/guix/build/guix_studio_cli_n
 
 build cmake_object_order_depends_target_studio_core: phony || .
 
+build CMakeFiles/studio_core.dir/src/studio_core/language_registry.cpp.o: CXX_COMPILER__studio_core_unscanned_ /Users/nzahn/Documents/GitHub/guix/tools/guix_studio_cli/src/studio_core/language_registry.cpp || cmake_object_order_depends_target_studio_core
+  DEP_FILE = CMakeFiles/studio_core.dir/src/studio_core/language_registry.cpp.o.d
+  FLAGS = -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk -Wall -Wextra -Wpedantic
+  INCLUDES = -I/Users/nzahn/Documents/GitHub/guix/tools/guix_studio_cli/src
+  OBJECT_DIR = CMakeFiles/studio_core.dir
+  OBJECT_FILE_DIR = CMakeFiles/studio_core.dir/src/studio_core
+
 build CMakeFiles/studio_core.dir/src/studio_core/gxp_project.cpp.o: CXX_COMPILER__studio_core_unscanned_ /Users/nzahn/Documents/GitHub/guix/tools/guix_studio_cli/src/studio_core/gxp_project.cpp || cmake_object_order_depends_target_studio_core
   DEP_FILE = CMakeFiles/studio_core.dir/src/studio_core/gxp_project.cpp.o.d
   FLAGS = -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk -Wall -Wextra -Wpedantic
@@ -51,8 +58,43 @@ build CMakeFiles/studio_core.dir/src/studio_core/gxp_project.cpp.o: CXX_COMPILER
   OBJECT_DIR = CMakeFiles/studio_core.dir
   OBJECT_FILE_DIR = CMakeFiles/studio_core.dir/src/studio_core
 
+build CMakeFiles/studio_core.dir/src/studio_core/gxp_migrate.cpp.o: CXX_COMPILER__studio_core_unscanned_ /Users/nzahn/Documents/GitHub/guix/tools/guix_studio_cli/src/studio_core/gxp_migrate.cpp || cmake_object_order_depends_target_studio_core
+  DEP_FILE = CMakeFiles/studio_core.dir/src/studio_core/gxp_migrate.cpp.o.d
+  FLAGS = -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk -Wall -Wextra -Wpedantic
+  INCLUDES = -I/Users/nzahn/Documents/GitHub/guix/tools/guix_studio_cli/src
+  OBJECT_DIR = CMakeFiles/studio_core.dir
+  OBJECT_FILE_DIR = CMakeFiles/studio_core.dir/src/studio_core
+
 build CMakeFiles/studio_core.dir/src/studio_core/resource_project.cpp.o: CXX_COMPILER__studio_core_unscanned_ /Users/nzahn/Documents/GitHub/guix/tools/guix_studio_cli/src/studio_core/resource_project.cpp || cmake_object_order_depends_target_studio_core
   DEP_FILE = CMakeFiles/studio_core.dir/src/studio_core/resource_project.cpp.o.d
+  FLAGS = -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk -Wall -Wextra -Wpedantic
+  INCLUDES = -I/Users/nzahn/Documents/GitHub/guix/tools/guix_studio_cli/src
+  OBJECT_DIR = CMakeFiles/studio_core.dir
+  OBJECT_FILE_DIR = CMakeFiles/studio_core.dir/src/studio_core
+
+build CMakeFiles/studio_core.dir/src/studio_core/resource_xml_export.cpp.o: CXX_COMPILER__studio_core_unscanned_ /Users/nzahn/Documents/GitHub/guix/tools/guix_studio_cli/src/studio_core/resource_xml_export.cpp || cmake_object_order_depends_target_studio_core
+  DEP_FILE = CMakeFiles/studio_core.dir/src/studio_core/resource_xml_export.cpp.o.d
+  FLAGS = -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk -Wall -Wextra -Wpedantic
+  INCLUDES = -I/Users/nzahn/Documents/GitHub/guix/tools/guix_studio_cli/src
+  OBJECT_DIR = CMakeFiles/studio_core.dir
+  OBJECT_FILE_DIR = CMakeFiles/studio_core.dir/src/studio_core
+
+build CMakeFiles/studio_core.dir/src/studio_core/strings_csv.cpp.o: CXX_COMPILER__studio_core_unscanned_ /Users/nzahn/Documents/GitHub/guix/tools/guix_studio_cli/src/studio_core/strings_csv.cpp || cmake_object_order_depends_target_studio_core
+  DEP_FILE = CMakeFiles/studio_core.dir/src/studio_core/strings_csv.cpp.o.d
+  FLAGS = -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk -Wall -Wextra -Wpedantic
+  INCLUDES = -I/Users/nzahn/Documents/GitHub/guix/tools/guix_studio_cli/src
+  OBJECT_DIR = CMakeFiles/studio_core.dir
+  OBJECT_FILE_DIR = CMakeFiles/studio_core.dir/src/studio_core
+
+build CMakeFiles/studio_core.dir/src/studio_core/strings_xliff.cpp.o: CXX_COMPILER__studio_core_unscanned_ /Users/nzahn/Documents/GitHub/guix/tools/guix_studio_cli/src/studio_core/strings_xliff.cpp || cmake_object_order_depends_target_studio_core
+  DEP_FILE = CMakeFiles/studio_core.dir/src/studio_core/strings_xliff.cpp.o.d
+  FLAGS = -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk -Wall -Wextra -Wpedantic
+  INCLUDES = -I/Users/nzahn/Documents/GitHub/guix/tools/guix_studio_cli/src
+  OBJECT_DIR = CMakeFiles/studio_core.dir
+  OBJECT_FILE_DIR = CMakeFiles/studio_core.dir/src/studio_core
+
+build CMakeFiles/studio_core.dir/src/studio_core/xml_dom.cpp.o: CXX_COMPILER__studio_core_unscanned_ /Users/nzahn/Documents/GitHub/guix/tools/guix_studio_cli/src/studio_core/xml_dom.cpp || cmake_object_order_depends_target_studio_core
+  DEP_FILE = CMakeFiles/studio_core.dir/src/studio_core/xml_dom.cpp.o.d
   FLAGS = -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk -Wall -Wextra -Wpedantic
   INCLUDES = -I/Users/nzahn/Documents/GitHub/guix/tools/guix_studio_cli/src
   OBJECT_DIR = CMakeFiles/studio_core.dir
@@ -80,7 +122,7 @@ build CMakeFiles/studio_core.dir/src/studio_core/xml_writer.cpp.o: CXX_COMPILER_
 #############################################
 # Link the static library libstudio_core.a
 
-build libstudio_core.a: CXX_STATIC_LIBRARY_LINKER__studio_core_ CMakeFiles/studio_core.dir/src/studio_core/gxp_project.cpp.o CMakeFiles/studio_core.dir/src/studio_core/resource_project.cpp.o CMakeFiles/studio_core.dir/src/studio_core/xml_reader.cpp.o CMakeFiles/studio_core.dir/src/studio_core/xml_writer.cpp.o
+build libstudio_core.a: CXX_STATIC_LIBRARY_LINKER__studio_core_ CMakeFiles/studio_core.dir/src/studio_core/language_registry.cpp.o CMakeFiles/studio_core.dir/src/studio_core/gxp_project.cpp.o CMakeFiles/studio_core.dir/src/studio_core/gxp_migrate.cpp.o CMakeFiles/studio_core.dir/src/studio_core/resource_project.cpp.o CMakeFiles/studio_core.dir/src/studio_core/resource_xml_export.cpp.o CMakeFiles/studio_core.dir/src/studio_core/strings_csv.cpp.o CMakeFiles/studio_core.dir/src/studio_core/strings_xliff.cpp.o CMakeFiles/studio_core.dir/src/studio_core/xml_dom.cpp.o CMakeFiles/studio_core.dir/src/studio_core/xml_reader.cpp.o CMakeFiles/studio_core.dir/src/studio_core/xml_writer.cpp.o
   ARCH_FLAGS = -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk
   OBJECT_DIR = CMakeFiles/studio_core.dir
   POST_BUILD = :

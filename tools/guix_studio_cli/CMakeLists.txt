@@ -3,10 +3,13 @@ cmake_minimum_required(VERSION 3.16)
 project(guix_studio_cli LANGUAGES CXX)
 
 add_library(studio_core STATIC
+  src/studio_core/language_registry.cpp
   src/studio_core/gxp_project.cpp
   src/studio_core/gxp_migrate.cpp
   src/studio_core/resource_project.cpp
   src/studio_core/resource_xml_export.cpp
+  src/studio_core/strings_csv.cpp
+  src/studio_core/strings_xliff.cpp
   src/studio_core/xml_dom.cpp
   src/studio_core/xml_reader.cpp
   src/studio_core/xml_writer.cpp
@@ -70,6 +73,63 @@ if (BUILD_TESTING)
   )
 
   add_test(
+    NAME guix_studio_cli_generate_guix_simple_filters
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/samples/demo_guix_simple/guix_simple.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_filters
+      -DDISPLAY_FILTERS=main_display
+      -DTHEME_FILTERS=theme_1
+      -DLANGUAGE_FILTERS=English
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/generate_smoke.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_generate_guix_simple_flags_no_args
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/samples/demo_guix_simple/guix_simple.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_flags_no_args
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/generate_flags_no_args.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_export_strings_guix_simple
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/samples/demo_guix_simple/guix_simple.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_strings
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/strings_export_smoke.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_import_strings_guix_simple
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/samples/demo_guix_simple/guix_simple.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_strings_import
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/strings_import_smoke.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_export_xliff_guix_simple
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/samples/demo_guix_simple/guix_simple.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_xliff
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/xliff_export_smoke.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_import_xliff_guix_simple
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/samples/demo_guix_simple/guix_simple.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_xliff_import
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/xliff_import_smoke.cmake
+  )
+
+  add_test(
     NAME guix_studio_cli_export_resource_xml_guix_simple
     COMMAND ${CMAKE_COMMAND}
       -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
@@ -90,6 +150,16 @@ if (BUILD_TESTING)
   )
 
   add_test(
+    NAME guix_studio_cli_generate_resource_xml_golden_guix_simple
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/samples/demo_guix_simple/guix_simple.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_golden_generate_guix_simple
+      -DGOLDEN_XML=${CMAKE_CURRENT_LIST_DIR}/tests/golden/guix_simple.resource.xml
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/compare_golden_generate_resource_xml.cmake
+  )
+
+  add_test(
     NAME guix_studio_cli_export_resource_xml_demo_guix_washing_machine
     COMMAND ${CMAKE_COMMAND}
       -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
@@ -106,6 +176,16 @@ if (BUILD_TESTING)
       -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_golden_export_demo_guix_washing_machine
       -DGOLDEN_XML=${CMAKE_CURRENT_LIST_DIR}/tests/golden/demo_guix_washing_machine.resource.xml
       -P ${CMAKE_CURRENT_LIST_DIR}/tests/compare_golden_resource_xml.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_generate_resource_xml_golden_demo_guix_washing_machine
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/samples/demo_guix_washing_machine/demo_guix_washing_machine.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_golden_generate_demo_guix_washing_machine
+      -DGOLDEN_XML=${CMAKE_CURRENT_LIST_DIR}/tests/golden/demo_guix_washing_machine.resource.xml
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/compare_golden_generate_resource_xml.cmake
   )
 
   add_test(
@@ -177,6 +257,27 @@ if (BUILD_TESTING)
   )
 
   add_test(
+    NAME guix_studio_cli_export_resource_xml_demo_guix_binres_standalone_filters
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/tutorials/demo_guix_binres_standalone/demo_guix_binres_standalone.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_export_filters_demo_guix_binres_standalone
+      -DDISPLAY_FILTER=main_display
+      -DTHEME_FILTERS=theme_1
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/export_resource_xml_filters_smoke.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_generate_resource_xml_golden_demo_guix_binres_standalone
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/tutorials/demo_guix_binres_standalone/demo_guix_binres_standalone.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_golden_generate_demo_guix_binres_standalone
+      -DGOLDEN_XML=${CMAKE_CURRENT_LIST_DIR}/tests/golden/demo_guix_binres_standalone.resource.xml
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/compare_golden_generate_resource_xml.cmake
+  )
+
+  add_test(
     NAME guix_studio_cli_export_resource_xml_golden_all_widgets_5_3_3
     COMMAND ${CMAKE_COMMAND}
       -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
@@ -184,5 +285,15 @@ if (BUILD_TESTING)
       -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_golden_export_all_widgets_5_3_3
       -DGOLDEN_XML=${CMAKE_CURRENT_LIST_DIR}/tests/golden/all_widgets_5_3_3.resource.xml
       -P ${CMAKE_CURRENT_LIST_DIR}/tests/compare_golden_resource_xml.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_generate_resource_xml_golden_all_widgets_5_3_3
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/test/example_internal/all_widgets_5_3_3/all_widgets_5_3_3.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_golden_generate_all_widgets_5_3_3
+      -DGOLDEN_XML=${CMAKE_CURRENT_LIST_DIR}/tests/golden/all_widgets_5_3_3.resource.xml
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/compare_golden_generate_resource_xml.cmake
   )
 endif()
