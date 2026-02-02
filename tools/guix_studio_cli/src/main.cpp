@@ -35,6 +35,7 @@ struct BinresStringTable {
 static bool write_binres_with_strings(
     std::ostream& os,
     bool include_resource_header,
+    const std::vector<uint16_t>& theme_ids,
     const BinresStringTable& string_table,
     std::string* error) {
     // Minimal-but-loadable GUIX binres image:
@@ -52,7 +53,7 @@ static bool write_binres_with_strings(
     constexpr uint32_t GX_LANGUAGE_HEADER_SIZE = 72;
     constexpr uint32_t GX_LANGUAGE_HEADER_NAME_SIZE = 64;
 
-    const uint16_t theme_count = 1;
+    const uint16_t theme_count = static_cast<uint16_t>(theme_ids.empty() ? 1 : theme_ids.size());
     const uint16_t language_count = static_cast<uint16_t>(string_table.language_names.size());
     const uint16_t string_count = string_table.string_count;
 
@@ -109,17 +110,19 @@ static bool write_binres_with_strings(
         write_u32_le(os, data_size);
     }
 
-    // GX_THEME_HEADER (114 bytes)
-    write_u16_le(os, GX_MAGIC_NUMBER);
-    write_u16_le(os, 0); // theme index
-    write_u16_le(os, 0); // color count
-    write_u16_le(os, 0); // palette count
-    write_u16_le(os, 0); // font count
-    write_u16_le(os, 0); // pixelmap count
-    {
-        // Remaining bytes of GX_THEME_HEADER
-        const std::string zeros(102, '\0');
-        os.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
+    // GX_THEME_HEADER (114 bytes each)
+    for (uint16_t i = 0; i < theme_count; ++i) {
+        const uint16_t theme_id = theme_ids.empty() ? 0 : theme_ids[i];
+        write_u16_le(os, GX_MAGIC_NUMBER);
+        write_u16_le(os, theme_id);
+        write_u16_le(os, 0); // color count
+        write_u16_le(os, 0); // palette count
+        write_u16_le(os, 0); // font count
+        write_u16_le(os, 0); // pixelmap count
+        {
+            const std::string zeros(102, '\0');
+            os.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
+        }
     }
 
     // GX_STRING_HEADER (10 bytes)
@@ -1309,6 +1312,38 @@ int cmd_generate(const std::vector<std::string>& args) {
 
             bool wrote = false;
             if (have_parsed_gxp && selected_display) {
+                // Determine theme IDs to include.
+                std::vector<uint16_t> theme_ids;
+                {
+                    std::vector<std::string> known_themes;
+                    if (const auto* ti = selected_display->firstChild("theme_info")) {
+                        for (const auto& c : ti->children) {
+                            if (c.name == "theme_name" && !c.text.empty()) {
+                                known_themes.push_back(c.text);
+                            }
+                        }
+                    }
+
+                    std::vector<std::string> selected_themes;
+                    if (!selected_theme_names.empty()) {
+                        selected_themes = selected_theme_names;
+                    } else {
+                        selected_themes = known_themes;
+                    }
+
+                    for (const auto& t : selected_themes) {
+                        for (size_t i = 0; i < known_themes.size(); ++i) {
+                            if (known_themes[i] == t) {
+                                theme_ids.push_back(static_cast<uint16_t>(i));
+                                break;
+                            }
+                        }
+                    }
+                    if (theme_ids.empty()) {
+                        theme_ids.push_back(0);
+                    }
+                }
+
                 // Determine enabled languages for this display (in header language order).
                 std::vector<std::string> enabled_languages;
                 for (const auto& lang : known_languages) {
@@ -1379,7 +1414,7 @@ int cmd_generate(const std::vector<std::string>& args) {
                             }
                         }
 
-                        wrote = write_binres_with_strings(f, include_header, tbl, &err);
+                        wrote = write_binres_with_strings(f, include_header, theme_ids, tbl, &err);
                     }
                 }
             }
