@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <cstdlib>
 #include <cctype>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -7,6 +9,248 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+static void write_u16_le(std::ostream& os, uint16_t v) {
+    const unsigned char b[2] = {static_cast<unsigned char>(v & 0xFF), static_cast<unsigned char>((v >> 8) & 0xFF)};
+    os.write(reinterpret_cast<const char*>(b), 2);
+}
+
+static void write_u32_le(std::ostream& os, uint32_t v) {
+    const unsigned char b[4] = {
+        static_cast<unsigned char>(v & 0xFF),
+        static_cast<unsigned char>((v >> 8) & 0xFF),
+        static_cast<unsigned char>((v >> 16) & 0xFF),
+        static_cast<unsigned char>((v >> 24) & 0xFF),
+    };
+    os.write(reinterpret_cast<const char*>(b), 4);
+}
+
+struct BinresStringTable {
+    std::vector<std::string> language_names;
+    uint16_t string_count = 0; // includes the reserved index 0
+    // strings[lang_index][string_index], where string_index runs [0, string_count)
+    std::vector<std::vector<std::optional<std::string>>> strings;
+};
+
+static bool write_binres_with_strings(
+    std::ostream& os,
+    bool include_resource_header,
+    const BinresStringTable& string_table,
+    std::string* error) {
+    // Minimal-but-loadable GUIX binres image:
+    // - 1 theme header with zero resources
+    // - string tables populated from the project
+    //
+    // String encoding follows `gx_binres_loader` for version >= GX_BINRES_VERSION_ADD_STRING_LENGTH:
+    //   USHORT length; then `length` bytes; then NUL.
+
+    constexpr uint16_t GX_MAGIC_NUMBER = 0x4758U; // "GX"
+    constexpr uint16_t GX_BINRES_VERSION_ADD_STRING_LENGTH = 50600; // gx_binres_loader.h
+
+    constexpr uint32_t GX_THEME_HEADER_SIZE = 114;
+    constexpr uint32_t GX_STRING_HEADER_SIZE = 10;
+    constexpr uint32_t GX_LANGUAGE_HEADER_SIZE = 72;
+    constexpr uint32_t GX_LANGUAGE_HEADER_NAME_SIZE = 64;
+
+    const uint16_t theme_count = 1;
+    const uint16_t language_count = static_cast<uint16_t>(string_table.language_names.size());
+    const uint16_t string_count = string_table.string_count;
+
+    if (language_count == 0 || string_count == 0) {
+        if (error) *error = "Invalid string table (no languages or no strings)";
+        return false;
+    }
+    if (string_table.strings.size() != language_count) {
+        if (error) *error = "Invalid string table (language/string shape mismatch)";
+        return false;
+    }
+    for (size_t li = 0; li < string_table.strings.size(); ++li) {
+        if (string_table.strings[li].size() != string_count) {
+            if (error) *error = "Invalid string table (string_count mismatch)";
+            return false;
+        }
+    }
+
+    auto calc_language_data_size = [&](size_t lang_index) -> uint32_t {
+        uint32_t size = 0;
+        for (uint16_t si = 1; si < string_count; ++si) {
+            size += 2; // length field
+            const auto& sopt = string_table.strings[lang_index][si];
+            if (sopt && !sopt->empty()) {
+                const uint32_t len = static_cast<uint32_t>(sopt->size());
+                size += len + 1; // bytes + NUL
+            }
+        }
+        return size;
+    };
+
+    const uint32_t theme_data_size = GX_THEME_HEADER_SIZE * theme_count;
+
+    uint32_t string_tables_total_size = 0;
+    std::vector<uint32_t> per_language_data_size;
+    per_language_data_size.reserve(language_count);
+    for (size_t li = 0; li < language_count; ++li) {
+        const uint32_t lang_data = calc_language_data_size(li);
+        per_language_data_size.push_back(lang_data);
+        string_tables_total_size += (GX_LANGUAGE_HEADER_SIZE + lang_data);
+    }
+
+    const uint32_t string_data_size = GX_STRING_HEADER_SIZE + string_tables_total_size;
+    const uint32_t data_size = theme_data_size + string_data_size;
+
+    if (include_resource_header) {
+        // GX_RESOURCE_HEADER (see common/inc/gx_api.h)
+        write_u16_le(os, GX_MAGIC_NUMBER);
+        write_u16_le(os, GX_BINRES_VERSION_ADD_STRING_LENGTH);
+        write_u16_le(os, theme_count);
+        write_u16_le(os, language_count);
+        write_u32_le(os, theme_data_size);
+        write_u32_le(os, string_data_size);
+        write_u32_le(os, data_size);
+    }
+
+    // GX_THEME_HEADER (114 bytes)
+    write_u16_le(os, GX_MAGIC_NUMBER);
+    write_u16_le(os, 0); // theme index
+    write_u16_le(os, 0); // color count
+    write_u16_le(os, 0); // palette count
+    write_u16_le(os, 0); // font count
+    write_u16_le(os, 0); // pixelmap count
+    {
+        // Remaining bytes of GX_THEME_HEADER
+        const std::string zeros(102, '\0');
+        os.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
+    }
+
+    // GX_STRING_HEADER (10 bytes)
+    write_u16_le(os, GX_MAGIC_NUMBER);
+    write_u16_le(os, language_count);
+    write_u16_le(os, string_count);
+    write_u32_le(os, string_tables_total_size);
+
+    // (GX_LANGUAGE_HEADER + string data) per language.
+    for (uint16_t lang_index = 0; lang_index < language_count; ++lang_index) {
+        // GX_LANGUAGE_HEADER (72 bytes)
+        write_u16_le(os, GX_MAGIC_NUMBER);
+        write_u16_le(os, lang_index);
+        {
+            char buf[GX_LANGUAGE_HEADER_NAME_SIZE] = {0};
+            const std::string& name = string_table.language_names[lang_index];
+            const size_t n = std::min(name.size(), static_cast<size_t>(GX_LANGUAGE_HEADER_NAME_SIZE - 1));
+            memcpy(buf, name.data(), n);
+            os.write(buf, GX_LANGUAGE_HEADER_NAME_SIZE);
+        }
+        write_u32_le(os, per_language_data_size[lang_index]);
+
+        // String table entries (index 1..string_count-1)
+        for (uint16_t si = 1; si < string_count; ++si) {
+            const auto& sopt = string_table.strings[lang_index][si];
+            if (!sopt || sopt->empty()) {
+                write_u16_le(os, 0);
+                continue;
+            }
+
+            const auto& s = *sopt;
+            if (s.size() > 0xFFFF) {
+                if (error) *error = "String too large for binres (max 65535 bytes)";
+                return false;
+            }
+
+            write_u16_le(os, static_cast<uint16_t>(s.size()));
+            os.write(s.data(), static_cast<std::streamsize>(s.size()));
+            os.put('\0');
+        }
+    }
+
+    if (!os) {
+        if (error) *error = "Failed while writing binary resource output";
+        return false;
+    }
+
+    return true;
+}
+
+static bool write_minimal_binres(std::ostream& os, bool include_resource_header, std::string* error) {
+    // This is a minimal, structurally valid GUIX binres image.
+    // It intentionally contains zero colors/fonts/pixelmaps and an empty string table.
+    //
+    // Layout (little-endian, as expected by gx_binres_loader):
+    //   GX_RESOURCE_HEADER
+    //   GX_THEME_HEADER (1 theme)
+    //   GX_STRING_HEADER
+    //   GX_LANGUAGE_HEADER (1 language)
+    //
+    // Note: This is not yet Studio-parity resource generation; it's a correctness step
+    // so loaders and tooling can recognize the file.
+
+    // Constants from `common/inc/gx_api.h`.
+    constexpr uint16_t GX_MAGIC_NUMBER = 0x4758U; // "GX"
+    constexpr uint16_t GX_BINRES_VERSION_ADD_STRING_LENGTH = 50600; // gx_binres_loader.h
+
+    constexpr uint32_t GX_THEME_HEADER_SIZE = 114;
+    constexpr uint32_t GX_STRING_HEADER_SIZE = 10;
+    constexpr uint32_t GX_LANGUAGE_HEADER_SIZE = 72;
+    constexpr uint32_t GX_LANGUAGE_HEADER_NAME_SIZE = 64;
+
+    const uint16_t theme_count = 1;
+    const uint16_t language_count = 1;
+
+    const uint32_t theme_data_size = GX_THEME_HEADER_SIZE * theme_count;
+    const uint32_t string_data_size = GX_STRING_HEADER_SIZE + GX_LANGUAGE_HEADER_SIZE * language_count;
+    const uint32_t data_size = theme_data_size + string_data_size;
+
+    if (include_resource_header) {
+        // GX_RESOURCE_HEADER
+        write_u16_le(os, GX_MAGIC_NUMBER);
+        write_u16_le(os, GX_BINRES_VERSION_ADD_STRING_LENGTH);
+        write_u16_le(os, theme_count);
+        write_u16_le(os, language_count);
+        write_u32_le(os, theme_data_size);
+        write_u32_le(os, string_data_size);
+        write_u32_le(os, data_size);
+    }
+
+    // GX_THEME_HEADER (114 bytes)
+    write_u16_le(os, GX_MAGIC_NUMBER);
+    write_u16_le(os, 0); // theme index
+    write_u16_le(os, 0); // color count
+    write_u16_le(os, 0); // palette count
+    write_u16_le(os, 0); // font count
+    write_u16_le(os, 0); // pixelmap count
+    // GX_SCROLLBAR_APPEARANCE vscroll (2*GX_VALUE + 2*GX_VALUE + GX_UBYTE + 4*ULONG + 3*ULONG) = 38 bytes
+    // But we don't want to duplicate struct layout assumptions; just write zeros for the remaining theme header.
+    // We already emitted 12 bytes above; the rest of the theme header is 102 bytes.
+    {
+        const std::string zeros(102, '\0');
+        os.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
+    }
+
+    // GX_STRING_HEADER (10 bytes)
+    write_u16_le(os, GX_MAGIC_NUMBER);
+    write_u16_le(os, language_count);
+    write_u16_le(os, 0); // string count
+    write_u32_le(os, GX_LANGUAGE_HEADER_SIZE * language_count);
+
+    // GX_LANGUAGE_HEADER (72 bytes)
+    write_u16_le(os, GX_MAGIC_NUMBER);
+    write_u16_le(os, 0); // language index
+    {
+        // language name (64 bytes, NUL padded)
+        const std::string name = "English";
+        char buf[GX_LANGUAGE_HEADER_NAME_SIZE] = {0};
+        const size_t n = std::min(name.size(), static_cast<size_t>(GX_LANGUAGE_HEADER_NAME_SIZE - 1));
+        memcpy(buf, name.data(), n);
+        os.write(buf, GX_LANGUAGE_HEADER_NAME_SIZE);
+    }
+    write_u32_le(os, 0); // language data size
+
+    if (!os) {
+        if (error) *error = "Failed while writing binary resource output";
+        return false;
+    }
+
+    return true;
+}
 
 #include "studio_core/gxp_migrate.h"
 #include "studio_core/gxp_project.h"
@@ -118,6 +362,8 @@ void print_usage(std::ostream& os) {
 
     os << "  guix_studio_cli migrate --project <path.gxp> [--output <path.gxp> | --in-place] [--json]\n\n";
 
+    os << "  guix_studio_cli format-gxp --project <path.gxp> [--output <path.gxp> | --in-place] [--json]\n\n";
+
     os << "  guix_studio_cli export-resource-xml --project <path.gxp> [--output_path <dir>] [--display/-d <name>] [--theme/-t <name,name,...>] [--json]\n";
     os << "  guix_studio_cli generate --project <path.gxp> [--output_path <dir>] [--resource/-r [base]] [--specification/-s [base]] [--binary/-b]";
     os << " [--display/-d <name>] [--theme/-t <name,name,...>] [--language/-l <name,name,...>] [--json]\n";
@@ -132,6 +378,86 @@ void print_usage(std::ostream& os) {
     os << "  - This is NOT a full replacement for the legacy Studio generator yet.\n";
     os << "  - Phase 1 generation currently exports a minimal resource-project XML only.\n";
     os << "  - Future phases will implement Studio-compatible C/spec/bin/srec outputs.\n";
+}
+
+int cmd_format_gxp(const std::vector<std::string>& args) {
+    const auto project = arg_value_any(args, {"--project", "-p"});
+    if (!project) {
+        std::cerr << "Missing required flag: --project/-p\n";
+        return 2;
+    }
+
+    const bool json = has_flag_any(args, {"--json"});
+    const bool in_place = has_flag_any(args, {"--in-place"});
+    const auto output_arg = arg_value_any(args, {"--output"});
+
+    if (in_place && output_arg) {
+        std::cerr << "Use only one of --output or --in-place\n";
+        return 2;
+    }
+
+    std::filesystem::path out_path;
+    if (in_place) {
+        out_path = std::filesystem::path(*project);
+    } else if (output_arg) {
+        out_path = std::filesystem::path(*output_arg);
+    } else {
+        out_path = std::filesystem::path(*project).parent_path() / (std::filesystem::path(*project).stem().string() + ".formatted.gxp");
+    }
+
+    auto parsed = studio_core::parse_xml_file(*project);
+    if (!parsed.ok) {
+        if (json) {
+            std::cout << "{\"ok\":false,\"error\":\"" << json_escape(parsed.error) << "\"}";
+            std::cout << "\n";
+            return 1;
+        }
+        std::cerr << parsed.error << "\n";
+        return 1;
+    }
+
+    if (parsed.doc.doctype.find("GUIX_Studio_Project") == std::string::npos) {
+        const std::string err = "Not a GUIX_Studio_Project (.gxp) file (missing/unknown doctype)";
+        if (json) {
+            std::cout << "{\"ok\":false,\"error\":\"" << json_escape(err) << "\"}";
+            std::cout << "\n";
+            return 1;
+        }
+        std::cerr << err << "\n";
+        return 1;
+    }
+
+    if (parsed.doc.root.name != "project") {
+        const std::string err = "Root element is not <project>";
+        if (json) {
+            std::cout << "{\"ok\":false,\"error\":\"" << json_escape(err) << "\"}";
+            std::cout << "\n";
+            return 1;
+        }
+        std::cerr << err << "\n";
+        return 1;
+    }
+
+    std::string write_err;
+    if (!studio_core::write_xml_file(out_path.string(), parsed.doc, &write_err)) {
+        if (json) {
+            std::cout << "{\"ok\":false,\"error\":\"" << json_escape(write_err) << "\"}";
+            std::cout << "\n";
+            return 2;
+        }
+        std::cerr << write_err << "\n";
+        return 2;
+    }
+
+    if (json) {
+        std::cout << "{\"ok\":true,\"project\":\"" << json_escape(*project) << "\"";
+        std::cout << ",\"output\":\"" << json_escape(out_path.string()) << "\"}";
+        std::cout << "\n";
+        return 0;
+    }
+
+    std::cout << "Wrote formatted project: " << out_path.string() << "\n";
+    return 0;
 }
 
 int cmd_export_xliff(const std::vector<std::string>& args) {
@@ -647,6 +973,8 @@ int cmd_generate(const std::vector<std::string>& args) {
     const bool big_endian = has_flag_any(args, {"--big_endian"});
     const bool no_res_header = has_flag_any(args, {"--no_res_header"});
 
+    (void)big_endian; // Not yet honored for binres payloads (future work).
+
     const auto display_arg = arg_value_any(args, {"--display", "-d"});
     const auto theme_arg = arg_value_any(args, {"--theme", "-t"});
     const auto language_arg = arg_value_any(args, {"--language", "-l"});
@@ -718,14 +1046,19 @@ int cmd_generate(const std::vector<std::string>& args) {
     std::optional<std::string> selected_display_name;
     std::vector<std::string> selected_theme_names;
     std::vector<std::string> selected_language_names;
+    studio_core::XmlParseResult parsed_gxp;
+    bool have_parsed_gxp = false;
+    const studio_core::XmlNode* selected_display = nullptr;
+    std::vector<std::string> known_languages;
     if (project) {
-        auto parsed = studio_core::parse_xml_file(*project);
-        if (!parsed.ok) {
-            std::cerr << parsed.error << "\n";
+        parsed_gxp = studio_core::parse_xml_file(*project);
+        if (!parsed_gxp.ok) {
+            std::cerr << parsed_gxp.error << "\n";
             return 1;
         }
+        have_parsed_gxp = true;
         {
-            auto mig = studio_core::migrate_gxp_to_latest(parsed.doc);
+            auto mig = studio_core::migrate_gxp_to_latest(parsed_gxp.doc);
             if (!mig.ok) {
                 warnings.push_back("Migration failed: " + mig.error);
             } else {
@@ -734,8 +1067,7 @@ int cmd_generate(const std::vector<std::string>& args) {
         }
 
         // Collect known languages.
-        std::vector<std::string> known_languages;
-        if (const auto* header = parsed.doc.root.firstChild("header")) {
+        if (const auto* header = parsed_gxp.doc.root.firstChild("header")) {
             if (const auto* ln = header->firstChild("language_names")) {
                 for (const auto& c : ln->children) {
                     if (c.name == "language" && !c.text.empty()) {
@@ -765,8 +1097,7 @@ int cmd_generate(const std::vector<std::string>& args) {
 
         // Collect displays and pick selected display.
         std::vector<std::string> known_displays;
-        const studio_core::XmlNode* selected_display = nullptr;
-        for (const auto* d : parsed.doc.root.childrenNamed("display_info")) {
+        for (const auto* d : parsed_gxp.doc.root.childrenNamed("display_info")) {
             const auto dn = studio_core::node_text(*d, "display_name");
             if (dn && !dn->empty()) {
                 known_displays.push_back(*dn);
@@ -780,7 +1111,7 @@ int cmd_generate(const std::vector<std::string>& args) {
             }
             selected_display_name = display_filters.front();
 
-            for (const auto* d : parsed.doc.root.childrenNamed("display_info")) {
+            for (const auto* d : parsed_gxp.doc.root.childrenNamed("display_info")) {
                 const auto dn = studio_core::node_text(*d, "display_name");
                 if (dn && *dn == *selected_display_name) {
                     selected_display = d;
@@ -793,7 +1124,7 @@ int cmd_generate(const std::vector<std::string>& args) {
             }
         } else {
             // Default to display_index==0 like export_resource_xml.
-            for (const auto* d : parsed.doc.root.childrenNamed("display_info")) {
+            for (const auto* d : parsed_gxp.doc.root.childrenNamed("display_info")) {
                 const auto idx = studio_core::node_int(*d, "display_index");
                 if (idx && *idx == 0) {
                     selected_display = d;
@@ -803,7 +1134,7 @@ int cmd_generate(const std::vector<std::string>& args) {
                 }
             }
             if (!selected_display) {
-                selected_display = parsed.doc.root.firstChild("display_info");
+                selected_display = parsed_gxp.doc.root.firstChild("display_info");
                 if (selected_display) {
                     const auto dn = studio_core::node_text(*selected_display, "display_name");
                     if (dn && !dn->empty()) selected_display_name = *dn;
@@ -969,12 +1300,100 @@ int cmd_generate(const std::vector<std::string>& args) {
             f << "# Phase 1 stub: specification output not implemented yet\n";
             f << "project: " << *project_name << "\n";
         } else if (o.kind == "binary") {
-            // A deterministic placeholder. Later phases will generate real binres.
-            f << "GUIXSTUB";
-            f << "\n";
-            f << "big_endian=" << (big_endian ? "true" : "false") << "\n";
-            f << "no_res_header=" << (no_res_header ? "true" : "false") << "\n";
-            f << "xml=" << resource_xml_path.string() << "\n";
+            // Phase 2+ work: real Studio-parity binres generation.
+            // For now, emit a minimal, loadable GUIX binres file so loaders/tools can consume it.
+            //
+            // NOTE: `--big_endian` is not yet honored for binres payloads (future work).
+            std::string err;
+            const bool include_header = !no_res_header;
+
+            bool wrote = false;
+            if (have_parsed_gxp && selected_display) {
+                // Determine enabled languages for this display (in header language order).
+                std::vector<std::string> enabled_languages;
+                for (const auto& lang : known_languages) {
+                    const auto enabled = studio_core::node_bool(*selected_display, lang.c_str());
+                    if (enabled && *enabled) enabled_languages.push_back(lang);
+                }
+                if (enabled_languages.empty()) {
+                    enabled_languages = known_languages;
+                }
+
+                std::vector<std::string> selected_languages;
+                if (!selected_language_names.empty()) {
+                    selected_languages = selected_language_names;
+                } else {
+                    selected_languages = enabled_languages;
+                }
+
+                const auto* st = selected_display->firstChild("string_table");
+                if (st && !selected_languages.empty()) {
+                    const auto ns = studio_core::node_int(*st, "num_strings");
+                    const auto records = st->childrenNamed("string_record");
+
+                    const uint16_t string_count = (ns && *ns > 0)
+                        ? static_cast<uint16_t>(*ns)
+                        : static_cast<uint16_t>(records.size() + 1);
+
+                    if (string_count >= 1) {
+                        BinresStringTable tbl;
+                        tbl.language_names = selected_languages;
+                        tbl.string_count = string_count;
+                        tbl.strings.resize(tbl.language_names.size());
+                        for (auto& vec : tbl.strings) {
+                            vec.resize(string_count);
+                        }
+
+                        // Map each selected language to its position in the display's enabled language list.
+                        std::vector<int> selected_lang_to_enabled_index;
+                        selected_lang_to_enabled_index.reserve(selected_languages.size());
+                        for (const auto& sel_lang : selected_languages) {
+                            int idx = -1;
+                            for (size_t i = 0; i < enabled_languages.size(); ++i) {
+                                if (enabled_languages[i] == sel_lang) {
+                                    idx = static_cast<int>(i);
+                                    break;
+                                }
+                            }
+                            selected_lang_to_enabled_index.push_back(idx);
+                        }
+
+                        // Fill strings. Record order defines string indices.
+                        const size_t max_records = std::min(records.size(), static_cast<size_t>(string_count > 0 ? string_count - 1 : 0));
+                        for (size_t ri = 0; ri < max_records; ++ri) {
+                            const auto* rec = records[ri];
+                            if (!rec) continue;
+
+                            const auto vals = rec->childrenNamed("val");
+                            const uint16_t string_index = static_cast<uint16_t>(ri + 1);
+
+                            for (size_t li = 0; li < selected_languages.size(); ++li) {
+                                const int enabled_idx = selected_lang_to_enabled_index[li];
+                                if (enabled_idx < 0) {
+                                    continue;
+                                }
+                                const size_t ei = static_cast<size_t>(enabled_idx);
+                                if (ei < vals.size() && vals[ei] && !vals[ei]->text.empty()) {
+                                    tbl.strings[li][string_index] = vals[ei]->text;
+                                }
+                            }
+                        }
+
+                        wrote = write_binres_with_strings(f, include_header, tbl, &err);
+                    }
+                }
+            }
+
+            if (!wrote) {
+                if (!err.empty()) {
+                    warnings.push_back("Binary generation fallback: " + err);
+                }
+                err.clear();
+                if (!write_minimal_binres(f, include_header, &err)) {
+                    std::cerr << err << "\n";
+                    return 1;
+                }
+            }
         }
     }
 
@@ -1202,6 +1621,10 @@ int main(int argc, char** argv) {
 
     if (command == "migrate") {
         return cmd_migrate(rest);
+    }
+
+    if (command == "format-gxp") {
+        return cmd_format_gxp(rest);
     }
 
     if (command == "export-resource-xml") {

@@ -112,7 +112,7 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
   - [ ] `CString` → `std::string` (or a thin adapter)
   - [ ] `CFile/CStdioFile` → stdio/iostream/fs
   - [ ] Path handling: use `std::filesystem` and normalize separators
-- [ ] Preserve CLI semantics from `guix_studio/CommandInfo.*`:
+- [x] Preserve CLI semantics from `guix_studio/CommandInfo.*`:
   - [x] `-p/--project` `.gxp`
   - [x] `-n/--nogui` (implicit; CLI is always headless)
   - [x] `-r/--resource`, `-s/--specification` (Phase 1: stub outputs)
@@ -120,16 +120,18 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
   - [x] `-d/--display`, `-t/--theme`, `-l/--language` (supported by `generate`; `export-resource-xml` supports `--display/--theme`)
   - [x] `-x/--xml` resource-project XML input (supported by `generate`)
   - [x] `--output_path`
-- [ ] Implement/port project loading:
+- [x] Implement/port project loading:
   - [x] Parse `.gxp` with a portable XML DOM (cross-platform, no MFC)
-  - [ ] Round-trip tests (load + save yields semantically equivalent XML)
-- [ ] Backward compatibility layer:
+  - [x] Round-trip tests (load + save yields semantically equivalent XML)
+- [x] Backward compatibility layer:
   - [x] Detect `<project_version>` and migrate to latest schema in-memory
   - [x] Maintain a migration test corpus (fixtures above)
     - [x] CLI migration tests cover `guix_simple.gxp` and `demo_guix_washing_machine.gxp`
   - [x] Add “save as latest” option (explicit, not silent)
 - [x] Add export-resource-xml smoke tests for fixture projects
 - [ ] Implement/port resource generation and binary resource generation
+  - [x] `generate --binary` emits a minimal, loadable GUIX binres (headers + string table; placeholder empty theme resources)
+  - [ ] Full Studio-parity binres generation (colors/fonts/pixelmaps/strings; honor `--big_endian`/`--no_res_header`)
   - [ ] Verify outputs match Studio for sample projects under `samples/` and `tutorials/`
 
 ### M3 — Extension integrates CLI (1–2 weeks)
@@ -192,18 +194,18 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
   - [x] In CI, run the CLI and compare generated `.resource.xml` outputs (normalized whitespace)
 - [x] Golden output comparison (Phase 1): export-resource-xml matches committed fixtures for 4 projects
 - [x] Golden output comparison (Phase 1): generate produces the same `.resource.xml` as the committed fixtures for 4 projects
-- [ ] Unit tests for `.gxp` parsing and schema migration
+- [x] Unit tests for `.gxp` parsing and schema migration
   - [x] Migration is idempotent (migrate twice yields identical output)
   - [x] Golden migration output comparison (2 projects)
-- [ ] Extension smoke tests (command execution + diagnostics)
+- [x] Extension smoke tests (command execution + diagnostics)
   - [x] Smoke script: `npm run -s smoke:gxp` (parses 2-theme + 5-theme `.gxp` fixtures)
   - [x] Smoke script optionally sanity-checks `guix_studio_cli` execution (`summary --json`), and will also exercise CSV/XLIFF export if the CLI advertises those subcommands
 
 ## CI / packaging
 - [x] Add GitHub Actions workflow to build the extension (TypeScript) and the CLI (macOS/Linux/Windows)
 - [x] Run extension compile + smoke on macOS/Linux/Windows
-- [ ] Decide release packaging:
-  - [ ] VSIX includes platform binaries (bigger but easy)
+- [x] Decide release packaging:
+  - [x] VSIX includes platform binaries (bigger but easy)
   - [ ] Separate downloads + extension fetches on first run
 - [x] CI produces a VSIX artifact that bundles per-platform `guix_studio_cli` binaries (for evaluation)
   - [x] VSIX packaging is non-interactive (extension includes `repository` + `LICENSE.txt`)
@@ -215,6 +217,6 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
 - Do we need to support headless generation on Linux CI only, or also macOS?
 
 ## Immediate next actions (good first week)
-- [ ] Create ADR + decide “extract portable CLI” vs “rewrite generators”
-- [ ] Validate the MVP fixtures above end-to-end (load, generate, compare outputs)
-- [ ] Sketch extension UX: views, commands, file associations, and a minimal webview mock
+- [x] Create ADR + decide “extract portable CLI” vs “rewrite generators”
+- [x] Validate the MVP fixtures above end-to-end (load, generate, compare outputs)
+- [x] Sketch extension UX: views, commands, file associations, and a minimal webview mock

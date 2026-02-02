@@ -189,6 +189,42 @@ if (BUILD_TESTING)
   )
 
   add_test(
+    NAME guix_studio_cli_round_trip_guix_simple
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/samples/demo_guix_simple/guix_simple.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_round_trip_guix_simple
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/gxp_round_trip_smoke.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_round_trip_demo_guix_washing_machine
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/samples/demo_guix_washing_machine/demo_guix_washing_machine.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_round_trip_demo_guix_washing_machine
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/gxp_round_trip_smoke.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_round_trip_demo_guix_binres_standalone
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/tutorials/demo_guix_binres_standalone/demo_guix_binres_standalone.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_round_trip_demo_guix_binres_standalone
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/gxp_round_trip_smoke.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_round_trip_all_widgets_5_3_3
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/test/example_internal/all_widgets_5_3_3/all_widgets_5_3_3.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_round_trip_all_widgets_5_3_3
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/gxp_round_trip_smoke.cmake
+  )
+
+  add_test(
     NAME guix_studio_cli_migrate_guix_simple
     COMMAND ${CMAKE_COMMAND}
       -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
@@ -275,6 +311,15 @@ if (BUILD_TESTING)
       -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_golden_generate_demo_guix_binres_standalone
       -DGOLDEN_XML=${CMAKE_CURRENT_LIST_DIR}/tests/golden/demo_guix_binres_standalone.resource.xml
       -P ${CMAKE_CURRENT_LIST_DIR}/tests/compare_golden_generate_resource_xml.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_generate_binary_demo_guix_binres_standalone
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/tutorials/demo_guix_binres_standalone/demo_guix_binres_standalone.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_generate_binary_demo_guix_binres_standalone
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/generate_binary_smoke.cmake
   )
 
   add_test(
