@@ -166,7 +166,7 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
       - [ ] Ensure offsets/sizes are correct and aligned; ensure `--big_endian` behavior matches Studio
       - [ ] Add smoke assertions for non-zero font tables and stable offsets
     - [ ] Strings parity (tighten to Studio)
-      - [ ] Confirm language ordering + padding rules and exact encoding/terminators
+      - [x] Confirm language ordering + padding rules and exact encoding/terminators
       - [ ] Confirm `--no_res_header` impacts offsets exactly as Studio does
       - [x] Add one “byte-level” assertion that catches regressions (e.g. known string bytes at a known offset)
     - [ ] Error handling + diagnostics parity

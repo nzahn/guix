@@ -16,8 +16,11 @@ endif()
 file(REMOVE_RECURSE "${OUT_DIR}")
 file(MAKE_DIRECTORY "${OUT_DIR}")
 
+set(out_orig "${OUT_DIR}/orig")
+file(MAKE_DIRECTORY "${out_orig}")
+
 execute_process(
-  COMMAND "${GUIX_STUDIO_CLI}" generate --project "${GUIX_PROJECT}" --output_path "${OUT_DIR}" --binary --json
+  COMMAND "${GUIX_STUDIO_CLI}" generate --project "${GUIX_PROJECT}" --output_path "${out_orig}" --binary --json
   RESULT_VARIABLE rv
   OUTPUT_VARIABLE out
   ERROR_VARIABLE err
@@ -33,6 +36,8 @@ if(NOT m)
   message(FATAL_ERROR "Unable to find binary output path in JSON:\n${out}")
 endif()
 set(bin "${CMAKE_MATCH_1}")
+
+set(bin_orig "${bin}")
 
 if(NOT EXISTS "${bin}")
   message(FATAL_ERROR "Expected binary output not created: ${bin}")
@@ -130,13 +135,15 @@ function(assert_string_at_index lang_data_off string_count target_index expected
   set(cur ${lang_data_off})
   # Skip entries 1..target_index-1.
   math(EXPR last_skip "${target_index} - 1")
-  foreach(si RANGE 1 ${last_skip})
-    read_u16_le(slen ${cur})
-    math(EXPR cur "${cur} + 2")
-    if(NOT slen EQUAL 0)
-      math(EXPR cur "${cur} + ${slen} + 1")
-    endif()
-  endforeach()
+  if(last_skip GREATER_EQUAL 1)
+    foreach(si RANGE 1 ${last_skip})
+      read_u16_le(slen ${cur})
+      math(EXPR cur "${cur} + 2")
+      if(NOT slen EQUAL 0)
+        math(EXPR cur "${cur} + ${slen} + 1")
+      endif()
+    endforeach()
+  endif()
 
   # Now at target_index length field.
   read_u16_le(got_len ${cur})
@@ -155,6 +162,89 @@ function(assert_string_at_index lang_data_off string_count target_index expected
   if(NOT "${nul_hex}" STREQUAL "00")
     message(FATAL_ERROR "Missing NUL terminator for ${expected_label}. Got ${nul_hex}")
   endif()
+endfunction()
+
+# Assert that an empty string is encoded as:
+#   USHORT length=0; then immediately the next entry (no bytes, no NUL).
+function(assert_empty_string_at_index lang_data_off string_count target_index expected_next_len expected_label)
+  if(string_count LESS_EQUAL target_index)
+    message(FATAL_ERROR "string_count too small to contain ${expected_label}. string_count=${string_count}, want index=${target_index}")
+  endif()
+  if(target_index GREATER_EQUAL string_count)
+    message(FATAL_ERROR "Invalid target_index for ${expected_label}: ${target_index}")
+  endif()
+  math(EXPR last_index "${string_count} - 1")
+  if(target_index EQUAL last_index)
+    message(FATAL_ERROR "Cannot assert empty string at last index for ${expected_label} (no next entry to validate)")
+  endif()
+
+  set(cur ${lang_data_off})
+  math(EXPR last_skip "${target_index} - 1")
+  if(last_skip GREATER_EQUAL 1)
+    foreach(si RANGE 1 ${last_skip})
+      read_u16_le(slen ${cur})
+      math(EXPR cur "${cur} + 2")
+      if(NOT slen EQUAL 0)
+        math(EXPR cur "${cur} + ${slen} + 1")
+      endif()
+    endforeach()
+  endif()
+
+  read_u16_le(got_len ${cur})
+  if(NOT got_len EQUAL 0)
+    message(FATAL_ERROR "Unexpected ${expected_label} length. Expected 0, got ${got_len}")
+  endif()
+
+  math(EXPR next_len_off "${cur} + 2")
+  read_u16_le(next_len ${next_len_off})
+  if(NOT next_len EQUAL expected_next_len)
+    message(FATAL_ERROR "Unexpected ${expected_label} next-length field. Expected ${expected_next_len}, got ${next_len} (this usually means an unexpected NUL/padding byte was inserted)")
+  endif()
+endfunction()
+
+function(find_string_record_index out_var gxp_path target_id)
+  set(found_index -1)
+  set(in_string_table 0)
+  set(in_string_record 0)
+  set(record_index 0)
+
+  file(STRINGS "${gxp_path}" gxp_lines)
+  foreach(raw_line IN LISTS gxp_lines)
+    set(line "${raw_line}")
+    string(STRIP "${line}" line)
+
+    if(NOT in_string_table)
+      if(line STREQUAL "<string_table>")
+        set(in_string_table 1)
+      endif()
+      continue()
+    endif()
+
+    if(line STREQUAL "</string_table>")
+      break()
+    endif()
+
+    if(line STREQUAL "<string_record>")
+      set(in_string_record 1)
+      math(EXPR record_index "${record_index} + 1")
+      continue()
+    endif()
+
+    if(line STREQUAL "</string_record>")
+      set(in_string_record 0)
+      continue()
+    endif()
+
+    if(in_string_record)
+      string(REGEX MATCH "^<id>([^<]+)</id>$" m_id "${line}")
+      if(m_id AND "${CMAKE_MATCH_1}" STREQUAL "${target_id}")
+        set(found_index ${record_index})
+        break()
+      endif()
+    endif()
+  endforeach()
+
+  set(${out_var} ${found_index} PARENT_SCOPE)
 endfunction()
 
 # Parse GX_RESOURCE_HEADER.
@@ -196,59 +286,146 @@ math(EXPR lang1_data_off "${lang1_hdr_off} + 72")
 math(EXPR lang1_name_off "${lang1_hdr_off} + 4")
 expect_ascii_bytes_at_offset(${lang1_name_off} "5370616E69736800" "language1 name prefix")
 
-# Byte-level string-table regression check:
-# Ensure a known string ID (from the .gxp) lands at the correct *binres* string index.
-#
-# Note: The numeric suffix in IDs like STRING_17 is just part of the name; the binres
-# string index is defined by the <string_record> order in <string_table>.
 set(target_id "STRING_17")
-set(target_index -1)
-set(in_string_table 0)
-set(in_string_record 0)
-set(record_index 0)
-
-file(STRINGS "${GUIX_PROJECT}" gxp_lines)
-foreach(raw_line IN LISTS gxp_lines)
-  set(line "${raw_line}")
-  string(STRIP "${line}" line)
-
-  if(NOT in_string_table)
-    if(line STREQUAL "<string_table>")
-      set(in_string_table 1)
-    endif()
-    continue()
-  endif()
-
-  if(line STREQUAL "</string_table>")
-    break()
-  endif()
-
-  if(line STREQUAL "<string_record>")
-    set(in_string_record 1)
-    math(EXPR record_index "${record_index} + 1")
-    continue()
-  endif()
-
-  if(line STREQUAL "</string_record>")
-    set(in_string_record 0)
-    continue()
-  endif()
-
-  if(in_string_record)
-    string(REGEX MATCH "^<id>([^<]+)</id>$" m_id "${line}")
-    if(m_id AND "${CMAKE_MATCH_1}" STREQUAL "${target_id}")
-      set(target_index ${record_index})
-      break()
-    endif()
-  endif()
-endforeach()
-
+find_string_record_index(target_index "${GUIX_PROJECT}" "${target_id}")
 if(target_index LESS 0)
   message(FATAL_ERROR "Unable to find ${target_id} in <string_table> of ${GUIX_PROJECT}")
 endif()
 
 assert_string_at_index(${lang0_data_off} ${string_count_strhdr} ${target_index} 9 "4C616E677561676573" "English ${target_id}")
 assert_string_at_index(${lang1_data_off} ${string_count_strhdr} ${target_index} 7 "4964696F6D6173" "Spanish ${target_id}")
+
+# Encoding/terminators sanity: empty translations must serialize as length=0 with no extra NUL.
+# We test this by generating from a modified copy of the fixture .gxp where the Spanish
+# translation of a known string is set to empty.
+set(out_empty "${OUT_DIR}/empty_es")
+file(MAKE_DIRECTORY "${out_empty}")
+set(mod_project "${out_empty}/demo_guix_binres_empty_es.gxp")
+
+get_filename_component(orig_project_dir "${GUIX_PROJECT}" DIRECTORY)
+
+set(empty_target_id "STRING_12")
+set(empty_target_spanish_value "temas 1")
+
+file(STRINGS "${GUIX_PROJECT}" orig_lines)
+set(wrote_empty 0)
+set(in_string_table2 0)
+set(in_string_record2 0)
+set(is_target_record2 0)
+set(mod_text "")
+foreach(raw_line IN LISTS orig_lines)
+  set(line "${raw_line}")
+  string(STRIP "${line}" stripped)
+
+  # Keep pixelmap assets resolvable even though this temporary .gxp lives under OUT_DIR.
+  # Rewrite any relative <pathname> entries to absolute paths rooted at the original fixture.
+  string(REGEX MATCH "^<pathname>([^<]+)</pathname>$" m_path "${stripped}")
+  if(m_path)
+    set(p "${CMAKE_MATCH_1}")
+    string(REPLACE "\\" "/" p_norm "${p}")
+    string(REGEX MATCH "^[A-Za-z]:[/\\].*" is_win_abs "${p}")
+    if(NOT p_norm MATCHES "^/" AND NOT is_win_abs)
+      set(line "<pathname>${orig_project_dir}/${p_norm}</pathname>")
+    endif()
+  endif()
+
+  if(stripped STREQUAL "<string_table>")
+    set(in_string_table2 1)
+  endif()
+  if(in_string_table2 AND stripped STREQUAL "<string_record>")
+    set(in_string_record2 1)
+    set(is_target_record2 0)
+  endif()
+  if(in_string_record2)
+    if(stripped STREQUAL "<id>${empty_target_id}</id>")
+      set(is_target_record2 1)
+    endif()
+    if(is_target_record2 AND stripped STREQUAL "<val>${empty_target_spanish_value}</val>")
+      set(line "<val></val>")
+      set(wrote_empty 1)
+    endif()
+  endif()
+  if(in_string_record2 AND stripped STREQUAL "</string_record>")
+    set(in_string_record2 0)
+    set(is_target_record2 0)
+  endif()
+  if(in_string_table2 AND stripped STREQUAL "</string_table>")
+    set(in_string_table2 0)
+  endif()
+
+  string(APPEND mod_text "${line}\n")
+endforeach()
+
+if(NOT wrote_empty)
+  message(FATAL_ERROR "Failed to produce modified fixture with empty Spanish ${empty_target_id} translation")
+endif()
+file(WRITE "${mod_project}" "${mod_text}")
+
+execute_process(
+  COMMAND "${GUIX_STUDIO_CLI}" generate --project "${mod_project}" --output_path "${out_empty}" --binary --json
+  RESULT_VARIABLE rv2
+  OUTPUT_VARIABLE out2
+  ERROR_VARIABLE err2
+)
+
+if(NOT rv2 EQUAL 0)
+  message(FATAL_ERROR "generate --binary (empty-string variant) failed (rv=${rv2})\nstdout:\n${out2}\nstderr:\n${err2}\n")
+endif()
+
+string(REGEX MATCH "\"kind\"\\s*:\\s*\"binary\"\\s*,\\s*\"path\"\\s*:\\s*\"([^\"]+)\"" m2 "${out2}")
+if(NOT m2)
+  message(FATAL_ERROR "Unable to find binary output path in JSON (empty-string variant):\n${out2}")
+endif()
+set(bin2 "${CMAKE_MATCH_1}")
+if(NOT EXISTS "${bin2}")
+  message(FATAL_ERROR "Expected binary output not created (empty-string variant): ${bin2}")
+endif()
+
+execute_process(
+  COMMAND "${GUIX_STUDIO_CLI}" binres-inspect --input "${bin2}" --json
+  RESULT_VARIABLE rv_ins2
+  OUTPUT_VARIABLE out_ins2
+  ERROR_VARIABLE err_ins2
+)
+
+if(NOT rv_ins2 EQUAL 0)
+  message(FATAL_ERROR "binres-inspect failed (empty-string variant) (rv=${rv_ins2})\nstdout:\n${out_ins2}\nstderr:\n${err_ins2}\n")
+endif()
+
+string(REGEX MATCH "\"string_header_offset\":([0-9]+)" m_str_off2 "${out_ins2}")
+if(NOT m_str_off2)
+  message(FATAL_ERROR "Unable to find string_header_offset in binres-inspect JSON (empty-string variant):\n${out_ins2}")
+endif()
+set(string_hdr_off_ins2 ${CMAKE_MATCH_1})
+
+set(bin "${bin2}")
+math(EXPR strhdr_lang_count_off2 "${string_hdr_off_ins2} + 2")
+read_u16_le(language_count_strhdr2 ${strhdr_lang_count_off2})
+math(EXPR strhdr_string_count_off2 "${string_hdr_off_ins2} + 4")
+read_u16_le(string_count_strhdr2 ${strhdr_string_count_off2})
+if(NOT language_count_strhdr2 EQUAL 2)
+  message(FATAL_ERROR "Unexpected language_count in GX_STRING_HEADER (empty-string variant). Expected 2, got ${language_count_strhdr2}")
+endif()
+
+math(EXPR lang0_hdr_off2 "${string_hdr_off_ins2} + 10")
+math(EXPR lang0_data_size_off2 "${lang0_hdr_off2} + 68")
+read_u32_le(lang0_data_size2 ${lang0_data_size_off2})
+math(EXPR lang0_data_off2 "${lang0_hdr_off2} + 72")
+math(EXPR lang1_hdr_off2 "${lang0_data_off2} + ${lang0_data_size2}")
+math(EXPR lang1_data_size_off2 "${lang1_hdr_off2} + 68")
+read_u32_le(lang1_data_size2 ${lang1_data_size_off2})
+math(EXPR lang1_data_off2 "${lang1_hdr_off2} + 72")
+
+find_string_record_index(empty_index2 "${mod_project}" "${empty_target_id}")
+if(empty_index2 LESS 0)
+  message(FATAL_ERROR "Unable to find ${empty_target_id} in <string_table> of ${mod_project}")
+endif()
+
+# STRING_12 is the first record; next record is STRING_13 with Spanish "temas 2" (7 ASCII bytes).
+assert_empty_string_at_index(${lang1_data_off2} ${string_count_strhdr2} ${empty_index2} 7 "Spanish empty ${empty_target_id}")
+
+# Restore for remaining assertions which target the original generated binres.
+set(bin "${bin_orig}")
 
 # Validate theme 0 contains a non-empty color table.
 if(NOT theme0_off EQUAL ${RES_HDR_SIZE})
