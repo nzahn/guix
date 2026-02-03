@@ -6,30 +6,68 @@
 #include <functional>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-static void write_u16_le(std::ostream& os, uint16_t v) {
-    const unsigned char b[2] = {static_cast<unsigned char>(v & 0xFF), static_cast<unsigned char>((v >> 8) & 0xFF)};
+#include "third_party/lodepng.h"
+
+static void write_u16(std::ostream& os, uint16_t v, bool big_endian) {
+    unsigned char b[2];
+    if (big_endian) {
+        b[0] = static_cast<unsigned char>((v >> 8) & 0xFF);
+        b[1] = static_cast<unsigned char>(v & 0xFF);
+    } else {
+        b[0] = static_cast<unsigned char>(v & 0xFF);
+        b[1] = static_cast<unsigned char>((v >> 8) & 0xFF);
+    }
     os.write(reinterpret_cast<const char*>(b), 2);
 }
 
-static void write_u32_le(std::ostream& os, uint32_t v) {
-    const unsigned char b[4] = {
-        static_cast<unsigned char>(v & 0xFF),
-        static_cast<unsigned char>((v >> 8) & 0xFF),
-        static_cast<unsigned char>((v >> 16) & 0xFF),
-        static_cast<unsigned char>((v >> 24) & 0xFF),
-    };
+static void write_u32(std::ostream& os, uint32_t v, bool big_endian) {
+    unsigned char b[4];
+    if (big_endian) {
+        b[0] = static_cast<unsigned char>((v >> 24) & 0xFF);
+        b[1] = static_cast<unsigned char>((v >> 16) & 0xFF);
+        b[2] = static_cast<unsigned char>((v >> 8) & 0xFF);
+        b[3] = static_cast<unsigned char>(v & 0xFF);
+    } else {
+        b[0] = static_cast<unsigned char>(v & 0xFF);
+        b[1] = static_cast<unsigned char>((v >> 8) & 0xFF);
+        b[2] = static_cast<unsigned char>((v >> 16) & 0xFF);
+        b[3] = static_cast<unsigned char>((v >> 24) & 0xFF);
+    }
     os.write(reinterpret_cast<const char*>(b), 4);
 }
 
 static void write_u8(std::ostream& os, uint8_t v) {
     const unsigned char b[1] = {static_cast<unsigned char>(v)};
     os.write(reinterpret_cast<const char*>(b), 1);
+}
+
+static uint32_t align_up_u32(uint32_t v, uint32_t a) {
+    if (a == 0) return v;
+    const uint32_t rem = v % a;
+    return rem ? (v + (a - rem)) : v;
+}
+
+static uint32_t pad_bytes_to_alignment(uint32_t absolute_pos, uint32_t alignment) {
+    const uint32_t aligned = align_up_u32(absolute_pos, alignment);
+    return aligned - absolute_pos;
+}
+
+static void write_zeros(std::ostream& os, uint32_t count) {
+    if (count == 0) return;
+    static constexpr char kZeros[64] = {0};
+    uint32_t remaining = count;
+    while (remaining) {
+        const uint32_t chunk = std::min<uint32_t>(remaining, static_cast<uint32_t>(sizeof(kZeros)));
+        os.write(kZeros, static_cast<std::streamsize>(chunk));
+        remaining -= chunk;
+    }
 }
 
 struct BinresStringTable {
@@ -56,6 +94,14 @@ struct BinresThemeData {
         // GUIX binres pixelmap IDs start at 1; index 0 is reserved.
         uint16_t index = 1;
         uint8_t format = 22; // GX_COLOR_FORMAT_32ARGB
+
+        // If present, this pixelmap corresponds to a file-backed resource.
+        // Phase-2: we emit a minimal placeholder payload for these to validate
+        // header/data sizing + alignment contracts.
+        std::optional<std::filesystem::path> source_path;
+        bool output_file_enabled = false;
+        bool binary_mode = false;
+        bool raw = false;
     };
 
     std::vector<PixelmapEntry> pixelmaps;
@@ -85,6 +131,7 @@ struct BinresThemeData {
 static bool write_binres_with_strings(
     std::ostream& os,
     bool include_resource_header,
+    bool big_endian,
     const std::vector<BinresThemeData>& themes,
     const BinresStringTable& string_table,
     std::string* error) {
@@ -139,37 +186,242 @@ static bool write_binres_with_strings(
     const uint32_t GX_FONT_HEADER_SIZE = 16;
     const uint32_t GX_PIXELMAP_HEADER_SIZE = 32;
 
-    auto calc_theme_data_size = [&](const BinresThemeData& theme) -> uint32_t {
-        uint32_t total = 0;
+    // Studio uses the pixelmap header's `data_offset` field to reference an
+    // already-emitted pixelmap payload (often in an earlier theme) to avoid
+    // duplicating data.
+    //
+    // Key: normalized source path string
+    // Val: absolute file offset of the referenced GX_PIXELMAP_HEADER
+    std::unordered_map<std::string, uint32_t> pixelmap_payload_header_by_source;
 
-        // Colors section: GX_COLOR_HEADER (8) + color_count * sizeof(GX_COLOR)
-        // where GX_COLOR is stored as ULONG (4 bytes) in binres.
-        if (!theme.colors.empty()) {
-            total += GX_COLOR_HEADER_SIZE;
-            total += static_cast<uint32_t>(theme.colors.size()) * 4U;
-        }
-
-        // Font section (Phase-1): a sequence of GX_FONT_HEADER records.
-        if (!theme.fonts.empty()) {
-            total += static_cast<uint32_t>(theme.fonts.size()) * GX_FONT_HEADER_SIZE;
-        }
-
-        // Pixelmap section (Phase-1): a sequence of GX_PIXELMAP_HEADER records.
-        if (!theme.pixelmaps.empty()) {
-            total += static_cast<uint32_t>(theme.pixelmaps.size()) * GX_PIXELMAP_HEADER_SIZE;
-        }
-
-        // Future: palettes and embedded font/pixelmap data.
-        return total;
+    struct PixelmapEmitPlan {
+        uint32_t header_abs_offset = 0;
+        uint32_t padding = 0;
+        uint32_t map_size = 0;
+        uint32_t aux_data_size = 0;
+        uint32_t data_size = 0;
+        uint32_t data_offset = 0;
+        uint16_t width = 1;
+        uint16_t height = 1;
+        uint8_t flags = 0;
+        std::vector<uint32_t> map_words;
+        bool has_payload = false;
+        bool is_reference = false;
     };
 
+    struct ThemeSectionSizes {
+        uint16_t color_count = 0;
+        uint16_t font_count = 0;
+        uint16_t pixelmap_count = 0;
+
+        uint32_t color_section_size = 0;
+        uint32_t font_section_size = 0;
+        uint32_t pixelmap_section_size = 0;
+        uint32_t theme_total_data_size = 0;
+
+        std::vector<PixelmapEmitPlan> pixelmap_plans;
+    };
+
+    auto should_emit_pixelmap_payload = [&](const BinresThemeData::PixelmapEntry& pm) -> bool {
+        // Phase-2: only emit minimal payloads for file-backed pixelmaps that are
+        // intended to be embedded in the theme binres (not standalone output).
+        if (!pm.source_path.has_value()) return false;
+        if (pm.output_file_enabled && pm.binary_mode) return false;
+        (void)pm.raw; // reserved for a later raw-byte emission path
+        return true;
+    };
+
+    auto decode_png_as_argb32_words = [&](const std::filesystem::path& png_path,
+                                         std::vector<uint32_t>& out_words,
+                                         uint16_t& out_width,
+                                         uint16_t& out_height,
+                                         std::string& out_err) -> bool {
+        unsigned char* rgba = nullptr;
+        unsigned w = 0;
+        unsigned h = 0;
+        const std::string filename = png_path.string();
+        const unsigned err = lodepng_decode32_file(&rgba, &w, &h, filename.c_str());
+        if (err) {
+            out_err = "PNG decode failed (" + filename + "): " + std::string(lodepng_error_text(err));
+            return false;
+        }
+        if (!rgba || w == 0 || h == 0) {
+            if (rgba) {
+                free(rgba);
+            }
+            out_err = "PNG decode returned empty image (" + filename + ")";
+            return false;
+        }
+        if (w > 0xFFFFu || h > 0xFFFFu) {
+            free(rgba);
+            out_err = "PNG dimensions exceed GX_VALUE limit (" + filename + ")";
+            return false;
+        }
+
+        const size_t pixel_count = static_cast<size_t>(w) * static_cast<size_t>(h);
+        out_words.resize(pixel_count);
+
+        for (size_t i = 0; i < pixel_count; ++i) {
+            const unsigned char r = rgba[i * 4 + 0];
+            const unsigned char g = rgba[i * 4 + 1];
+            const unsigned char b = rgba[i * 4 + 2];
+            const unsigned char a = rgba[i * 4 + 3];
+            const uint32_t argb = (static_cast<uint32_t>(a) << 24) |
+                (static_cast<uint32_t>(r) << 16) |
+                (static_cast<uint32_t>(g) << 8) |
+                static_cast<uint32_t>(b);
+            out_words[i] = argb;
+        }
+
+        free(rgba);
+        out_width = static_cast<uint16_t>(w);
+        out_height = static_cast<uint16_t>(h);
+        return true;
+    };
+
+    std::string fatal_asset_error;
+
+    auto compute_theme_section_sizes = [&](const BinresThemeData& theme, uint32_t absolute_theme_start) -> ThemeSectionSizes {
+        ThemeSectionSizes s;
+
+        s.color_count = static_cast<uint16_t>(std::min<size_t>(theme.colors.size(), 0xFFFF));
+        s.font_count = static_cast<uint16_t>(std::min<size_t>(theme.fonts.size(), 0xFFFF));
+        s.pixelmap_count = static_cast<uint16_t>(std::min<size_t>(theme.pixelmaps.size(), 0xFFFF));
+
+        s.color_section_size = theme.colors.empty() ? 0U : (GX_COLOR_HEADER_SIZE + static_cast<uint32_t>(s.color_count) * 4U);
+        s.font_section_size = static_cast<uint32_t>(s.font_count) * GX_FONT_HEADER_SIZE;
+
+        // Pixelmap sizing includes per-pixelmap payload + alignment padding.
+        s.pixelmap_plans.resize(s.pixelmap_count);
+        uint32_t pixelmap_abs_cursor = absolute_theme_start + GX_THEME_HEADER_SIZE + s.color_section_size + s.font_section_size;
+        for (uint16_t i = 0; i < s.pixelmap_count; ++i) {
+            const auto& pm = theme.pixelmaps[i];
+            PixelmapEmitPlan plan;
+
+            plan.header_abs_offset = pixelmap_abs_cursor;
+
+            if (should_emit_pixelmap_payload(pm)) {
+                // Phase-3: decode the source PNG and embed an uncompressed 32ARGB map.
+                // Studio may choose different formats/compression based on project settings;
+                // we keep this as an incremental correctness step.
+                std::string decode_err;
+                std::optional<std::string> source_key;
+                if (pm.source_path.has_value()) {
+                    source_key = pm.source_path->lexically_normal().generic_string();
+                }
+
+                if (source_key.has_value()) {
+                    const auto it = pixelmap_payload_header_by_source.find(*source_key);
+                    if (it != pixelmap_payload_header_by_source.end()) {
+                        // Emit a header-only reference to previously-emitted pixelmap data.
+                        plan.data_offset = it->second;
+                        plan.is_reference = true;
+                    }
+                }
+
+                if (!plan.is_reference && pm.source_path.has_value()) {
+                    if (!std::filesystem::exists(*pm.source_path)) {
+                        if (fatal_asset_error.empty()) {
+                            fatal_asset_error = "Missing pixelmap source asset: " + pm.source_path->string();
+                        }
+                    } else if (!decode_png_as_argb32_words(*pm.source_path, plan.map_words, plan.width, plan.height, decode_err)) {
+                        if (fatal_asset_error.empty()) {
+                            fatal_asset_error = decode_err;
+                        }
+                    }
+                }
+
+                if (!plan.is_reference && pm.source_path.has_value() && fatal_asset_error.empty()) {
+                    const uint32_t bytes = static_cast<uint32_t>(plan.map_words.size() * sizeof(uint32_t));
+                    plan.map_size = bytes;
+                    plan.aux_data_size = 0;
+                    plan.data_size = bytes;
+                    plan.has_payload = true;
+
+                    // If the image uses alpha, mark it as such.
+                    // GX_PIXELMAP_ALPHA is 0x04 per `common/inc/gx_api.h`.
+                    bool any_alpha = false;
+                    for (const uint32_t c : plan.map_words) {
+                        if ((c & 0xFF000000u) != 0xFF000000u) {
+                            any_alpha = true;
+                            break;
+                        }
+                    }
+                    if (any_alpha) {
+                        plan.flags = 0x04;
+                    }
+
+                    const uint32_t data_output_pos = pixelmap_abs_cursor + GX_PIXELMAP_HEADER_SIZE;
+                    plan.padding = pad_bytes_to_alignment(data_output_pos, 4);
+
+                    if (source_key.has_value()) {
+                        // Record the header offset as the reference target.
+                        pixelmap_payload_header_by_source.emplace(*source_key, plan.header_abs_offset);
+                    }
+                } else if (!plan.is_reference && pm.source_path.has_value() && fatal_asset_error.empty()) {
+                    // No payload emitted (unexpected). Keep header-only.
+                }
+            }
+
+            s.pixelmap_plans[i] = std::move(plan);
+
+            // Referenced and header-only pixelmaps emit only the header.
+            const uint32_t block_size = (s.pixelmap_plans[i].has_payload)
+                ? (GX_PIXELMAP_HEADER_SIZE + s.pixelmap_plans[i].padding + s.pixelmap_plans[i].data_size)
+                : GX_PIXELMAP_HEADER_SIZE;
+            s.pixelmap_section_size += block_size;
+            pixelmap_abs_cursor += block_size;
+        }
+
+        s.theme_total_data_size = s.color_section_size + s.font_section_size + s.pixelmap_section_size; // palette not yet included
+
+        return s;
+    };
+
+    // If we encountered a missing/undecodable required asset while computing layout,
+    // fail fast with an actionable error.
+    auto return_fatal_asset_error_if_any = [&]() -> bool {
+        if (!fatal_asset_error.empty()) {
+            if (error) {
+                *error = fatal_asset_error;
+            }
+            return true;
+        }
+        return false;
+    };
+
+    // Pre-compute per-theme sizes using absolute offsets so pixelmap alignment/padding is stable.
+    struct ComputedTheme {
+        const BinresThemeData* theme = nullptr;
+        ThemeSectionSizes sizes;
+    };
+
+    const uint32_t resource_header_size = include_resource_header ? 20U : 0U;
+    std::vector<ComputedTheme> computed;
+    computed.reserve(themes.empty() ? 1U : themes.size());
+
     uint32_t theme_data_size = 0;
+    uint32_t theme_abs_cursor = resource_header_size;
     if (themes.empty()) {
-        theme_data_size = GX_THEME_HEADER_SIZE;
+        BinresThemeData empty;
+        ComputedTheme ct;
+        ct.theme = nullptr;
+        ct.sizes = compute_theme_section_sizes(empty, theme_abs_cursor);
+        computed.push_back(ct);
+        theme_data_size = GX_THEME_HEADER_SIZE; // header only
     } else {
         for (const auto& t : themes) {
-            theme_data_size += GX_THEME_HEADER_SIZE;
-            theme_data_size += calc_theme_data_size(t);
+            ComputedTheme ct;
+            ct.theme = &t;
+            ct.sizes = compute_theme_section_sizes(t, theme_abs_cursor);
+            if (return_fatal_asset_error_if_any()) {
+                return false;
+            }
+            computed.push_back(ct);
+
+            const uint32_t block = GX_THEME_HEADER_SIZE + ct.sizes.theme_total_data_size;
+            theme_data_size += block;
+            theme_abs_cursor += block;
         }
     }
 
@@ -187,60 +439,60 @@ static bool write_binres_with_strings(
 
     if (include_resource_header) {
         // GX_RESOURCE_HEADER (see common/inc/gx_api.h)
-        write_u16_le(os, GX_MAGIC_NUMBER);
-        write_u16_le(os, GX_BINRES_VERSION_ADD_STRING_LENGTH);
-        write_u16_le(os, theme_count);
-        write_u16_le(os, language_count);
-        write_u32_le(os, theme_data_size);
-        write_u32_le(os, string_data_size);
-        write_u32_le(os, data_size);
+        write_u16(os, GX_MAGIC_NUMBER, big_endian);
+        write_u16(os, GX_BINRES_VERSION_ADD_STRING_LENGTH, big_endian);
+        write_u16(os, theme_count, big_endian);
+        write_u16(os, language_count, big_endian);
+        write_u32(os, theme_data_size, big_endian);
+        write_u32(os, string_data_size, big_endian);
+        write_u32(os, data_size, big_endian);
     }
 
-    auto write_theme_header = [&](const BinresThemeData& theme, uint16_t color_count, uint32_t color_data_size, uint32_t theme_total_data_size) {
+    auto write_theme_header = [&](const BinresThemeData& theme, const ThemeSectionSizes& sizes) {
         // Layout must match reads in `common/src/gx_binres_theme_load.c`.
-        write_u16_le(os, GX_MAGIC_NUMBER);
-        write_u16_le(os, theme.theme_id);
-        write_u16_le(os, color_count);
-        write_u16_le(os, 0); // palette count
-        write_u16_le(os, static_cast<uint16_t>(std::min<size_t>(theme.fonts.size(), 0xFFFF))); // font count
-        write_u16_le(os, static_cast<uint16_t>(std::min<size_t>(theme.pixelmaps.size(), 0xFFFF))); // pixelmap count
+        write_u16(os, GX_MAGIC_NUMBER, big_endian);
+        write_u16(os, theme.theme_id, big_endian);
+        write_u16(os, sizes.color_count, big_endian);
+        write_u16(os, 0, big_endian); // palette count
+        write_u16(os, sizes.font_count, big_endian);
+        write_u16(os, sizes.pixelmap_count, big_endian);
 
         // vscroll appearance
-        write_u16_le(os, theme.vscroll.scroll_width);
-        write_u16_le(os, theme.vscroll.thumb_width);
-        write_u16_le(os, theme.vscroll.thumb_travel_min);
-        write_u16_le(os, theme.vscroll.thumb_travel_max);
+        write_u16(os, theme.vscroll.scroll_width, big_endian);
+        write_u16(os, theme.vscroll.thumb_width, big_endian);
+        write_u16(os, theme.vscroll.thumb_travel_min, big_endian);
+        write_u16(os, theme.vscroll.thumb_travel_max, big_endian);
         write_u8(os, theme.vscroll.thumb_border_style);
-        write_u32_le(os, theme.vscroll.scroll_fill_pixelmap);
-        write_u32_le(os, theme.vscroll.scroll_thumb_pixelmap);
-        write_u32_le(os, theme.vscroll.scroll_up_pixelmap);
-        write_u32_le(os, theme.vscroll.scroll_down_pixelmap);
-        write_u32_le(os, theme.vscroll.scroll_thumb_color);
-        write_u32_le(os, theme.vscroll.scroll_thumb_border_color);
-        write_u32_le(os, theme.vscroll.scroll_button_color);
+        write_u32(os, theme.vscroll.scroll_fill_pixelmap, big_endian);
+        write_u32(os, theme.vscroll.scroll_thumb_pixelmap, big_endian);
+        write_u32(os, theme.vscroll.scroll_up_pixelmap, big_endian);
+        write_u32(os, theme.vscroll.scroll_down_pixelmap, big_endian);
+        write_u32(os, theme.vscroll.scroll_thumb_color, big_endian);
+        write_u32(os, theme.vscroll.scroll_thumb_border_color, big_endian);
+        write_u32(os, theme.vscroll.scroll_button_color, big_endian);
 
         // hscroll appearance
-        write_u16_le(os, theme.hscroll.scroll_width);
-        write_u16_le(os, theme.hscroll.thumb_width);
-        write_u16_le(os, theme.hscroll.thumb_travel_min);
-        write_u16_le(os, theme.hscroll.thumb_travel_max);
+        write_u16(os, theme.hscroll.scroll_width, big_endian);
+        write_u16(os, theme.hscroll.thumb_width, big_endian);
+        write_u16(os, theme.hscroll.thumb_travel_min, big_endian);
+        write_u16(os, theme.hscroll.thumb_travel_max, big_endian);
         write_u8(os, theme.hscroll.thumb_border_style);
-        write_u32_le(os, theme.hscroll.scroll_fill_pixelmap);
-        write_u32_le(os, theme.hscroll.scroll_thumb_pixelmap);
-        write_u32_le(os, theme.hscroll.scroll_up_pixelmap);
-        write_u32_le(os, theme.hscroll.scroll_down_pixelmap);
-        write_u32_le(os, theme.hscroll.scroll_thumb_color);
-        write_u32_le(os, theme.hscroll.scroll_thumb_border_color);
-        write_u32_le(os, theme.hscroll.scroll_button_color);
+        write_u32(os, theme.hscroll.scroll_fill_pixelmap, big_endian);
+        write_u32(os, theme.hscroll.scroll_thumb_pixelmap, big_endian);
+        write_u32(os, theme.hscroll.scroll_up_pixelmap, big_endian);
+        write_u32(os, theme.hscroll.scroll_down_pixelmap, big_endian);
+        write_u32(os, theme.hscroll.scroll_thumb_color, big_endian);
+        write_u32(os, theme.hscroll.scroll_thumb_border_color, big_endian);
+        write_u32(os, theme.hscroll.scroll_button_color, big_endian);
 
-        write_u32_le(os, theme.vscroll_style);
-        write_u32_le(os, theme.hscroll_style);
+        write_u32(os, theme.vscroll_style, big_endian);
+        write_u32(os, theme.hscroll_style, big_endian);
 
-        write_u32_le(os, color_data_size);
-        write_u32_le(os, 0); // palette data size
-        write_u32_le(os, static_cast<uint32_t>(std::min<size_t>(theme.fonts.size(), 0xFFFF)) * GX_FONT_HEADER_SIZE);
-        write_u32_le(os, static_cast<uint32_t>(std::min<size_t>(theme.pixelmaps.size(), 0xFFFF)) * GX_PIXELMAP_HEADER_SIZE);
-        write_u32_le(os, theme_total_data_size);
+        write_u32(os, sizes.color_section_size, big_endian);
+        write_u32(os, 0, big_endian); // palette data size
+        write_u32(os, sizes.font_section_size, big_endian);
+        write_u32(os, sizes.pixelmap_section_size, big_endian);
+        write_u32(os, sizes.theme_total_data_size, big_endian);
     };
 
     auto write_color_section = [&](const BinresThemeData& theme) {
@@ -252,13 +504,13 @@ static bool write_binres_with_strings(
         const uint32_t data_bytes = static_cast<uint32_t>(count) * 4U;
 
         // GX_COLOR_HEADER
-        write_u16_le(os, GX_MAGIC_NUMBER);
-        write_u16_le(os, count);
-        write_u32_le(os, data_bytes);
+        write_u16(os, GX_MAGIC_NUMBER, big_endian);
+        write_u16(os, count, big_endian);
+        write_u32(os, data_bytes, big_endian);
 
         // GX_COLOR table (ULONG per entry)
         for (uint16_t i = 0; i < count; ++i) {
-            write_u32_le(os, theme.colors[i]);
+            write_u32(os, theme.colors[i], big_endian);
         }
     };
 
@@ -276,9 +528,9 @@ static bool write_binres_with_strings(
         //   ULONG data_size
         //   ULONG data_offset
         for (const auto& fe : theme.fonts) {
-            write_u16_le(os, GX_MAGIC_NUMBER);
-            write_u16_le(os, fe.index);
-            write_u16_le(os, 0); // page_count
+            write_u16(os, GX_MAGIC_NUMBER, big_endian);
+            write_u16(os, fe.index, big_endian);
+            write_u16(os, 0, big_endian); // page_count
             write_u8(os, static_cast<uint8_t>(fe.is_default ? 1 : 0));
 
             uint8_t bits = fe.bits;
@@ -287,32 +539,8 @@ static bool write_binres_with_strings(
             }
             write_u8(os, bits);
 
-            write_u32_le(os, 0); // data_size
-            write_u32_le(os, 0); // data_offset
-        }
-    };
-
-    auto write_pixelmap_section = [&](const BinresThemeData& theme) {
-        if (theme.pixelmaps.empty()) {
-            return;
-        }
-
-        // GX_PIXELMAP_HEADER layout per `common/src/gx_binres_theme_load.c`.
-        // Phase-1: write header-only pixelmaps (no embedded data).
-        for (const auto& pm : theme.pixelmaps) {
-            write_u16_le(os, GX_MAGIC_NUMBER);
-            write_u16_le(os, pm.index);
-            write_u8(os, 0); // version_major
-            write_u8(os, 0); // version_minor
-            write_u8(os, 0); // flags
-            write_u8(os, pm.format);
-            write_u32_le(os, 0); // map_size
-            write_u32_le(os, 0); // aux_data_size
-            write_u32_le(os, 0); // transparent_color
-            write_u16_le(os, 1); // width
-            write_u16_le(os, 1); // height
-            write_u32_le(os, 0); // data_size
-            write_u32_le(os, 0); // data_offset
+            write_u32(os, 0, big_endian); // data_size
+            write_u32(os, 0, big_endian); // data_offset
         }
     };
 
@@ -323,35 +551,72 @@ static bool write_binres_with_strings(
     //   [font section]
     //   [pixelmap section]
     // repeated per theme.
+    auto write_pixelmap_section_with_plans = [&](const BinresThemeData& theme, const ThemeSectionSizes& sizes) {
+        if (theme.pixelmaps.empty()) {
+            return;
+        }
+
+        // GX_PIXELMAP_HEADER layout per `common/src/gx_binres_theme_load.c`.
+        // Phase-3: emit uncompressed 32ARGB payloads for file-backed pixelmaps.
+
+        const size_t count = std::min(theme.pixelmaps.size(), sizes.pixelmap_plans.size());
+        for (size_t i = 0; i < count; ++i) {
+            const auto& pm = theme.pixelmaps[i];
+            const auto& plan = sizes.pixelmap_plans[i];
+
+            write_u16(os, GX_MAGIC_NUMBER, big_endian);
+            write_u16(os, pm.index, big_endian);
+            write_u8(os, 0); // version_major
+            write_u8(os, 0); // version_minor
+            write_u8(os, plan.flags);
+            write_u8(os, pm.format);
+            write_u32(os, plan.map_size, big_endian);
+            write_u32(os, plan.aux_data_size, big_endian);
+            write_u32(os, 0, big_endian); // transparent_color
+            write_u16(os, plan.width, big_endian);
+            write_u16(os, plan.height, big_endian);
+            write_u32(os, plan.data_size, big_endian);
+            write_u32(os, plan.data_offset, big_endian);
+
+            if (!plan.has_payload) {
+                continue;
+            }
+
+            write_zeros(os, plan.padding);
+
+            // Payload: GX_COLOR words serialized with requested endianness.
+            for (const uint32_t c : plan.map_words) {
+                write_u32(os, c, big_endian);
+            }
+        }
+    };
+
     if (themes.empty()) {
         // Minimal single theme.
-        write_theme_header(BinresThemeData{}, 0, 0, 0);
+        BinresThemeData empty;
+        const ThemeSectionSizes sizes = compute_theme_section_sizes(empty, resource_header_size);
+        write_theme_header(empty, sizes);
     } else {
-        for (const auto& theme : themes) {
-            const uint16_t color_count = static_cast<uint16_t>(std::min<size_t>(theme.colors.size(), 0xFFFF));
-            const uint32_t color_section_size = theme.colors.empty() ? 0U : (GX_COLOR_HEADER_SIZE + static_cast<uint32_t>(color_count) * 4U);
-            const uint32_t font_section_size = static_cast<uint32_t>(std::min<size_t>(theme.fonts.size(), 0xFFFF)) * GX_FONT_HEADER_SIZE;
-            const uint32_t pixelmap_section_size = static_cast<uint32_t>(std::min<size_t>(theme.pixelmaps.size(), 0xFFFF)) * GX_PIXELMAP_HEADER_SIZE;
-            const uint32_t theme_total_data_size = color_section_size + font_section_size + pixelmap_section_size; // palette not yet included
-
-            write_theme_header(theme, color_count, color_section_size, theme_total_data_size);
+        for (const auto& ct : computed) {
+            const BinresThemeData& theme = *ct.theme;
+            write_theme_header(theme, ct.sizes);
             write_color_section(theme);
             write_font_section(theme);
-            write_pixelmap_section(theme);
+            write_pixelmap_section_with_plans(theme, ct.sizes);
         }
     }
 
     // GX_STRING_HEADER (10 bytes)
-    write_u16_le(os, GX_MAGIC_NUMBER);
-    write_u16_le(os, language_count);
-    write_u16_le(os, string_count);
-    write_u32_le(os, string_tables_total_size);
+    write_u16(os, GX_MAGIC_NUMBER, big_endian);
+    write_u16(os, language_count, big_endian);
+    write_u16(os, string_count, big_endian);
+    write_u32(os, string_tables_total_size, big_endian);
 
     // (GX_LANGUAGE_HEADER + string data) per language.
     for (uint16_t lang_index = 0; lang_index < language_count; ++lang_index) {
         // GX_LANGUAGE_HEADER (72 bytes)
-        write_u16_le(os, GX_MAGIC_NUMBER);
-        write_u16_le(os, lang_index);
+        write_u16(os, GX_MAGIC_NUMBER, big_endian);
+        write_u16(os, lang_index, big_endian);
         {
             char buf[GX_LANGUAGE_HEADER_NAME_SIZE] = {0};
             const std::string& name = string_table.language_names[lang_index];
@@ -359,13 +624,13 @@ static bool write_binres_with_strings(
             memcpy(buf, name.data(), n);
             os.write(buf, GX_LANGUAGE_HEADER_NAME_SIZE);
         }
-        write_u32_le(os, per_language_data_size[lang_index]);
+        write_u32(os, per_language_data_size[lang_index], big_endian);
 
         // String table entries (index 1..string_count-1)
         for (uint16_t si = 1; si < string_count; ++si) {
             const auto& sopt = string_table.strings[lang_index][si];
             if (!sopt || sopt->empty()) {
-                write_u16_le(os, 0);
+                write_u16(os, 0, big_endian);
                 continue;
             }
 
@@ -375,7 +640,7 @@ static bool write_binres_with_strings(
                 return false;
             }
 
-            write_u16_le(os, static_cast<uint16_t>(s.size()));
+            write_u16(os, static_cast<uint16_t>(s.size()), big_endian);
             os.write(s.data(), static_cast<std::streamsize>(s.size()));
             os.put('\0');
         }
@@ -389,7 +654,7 @@ static bool write_binres_with_strings(
     return true;
 }
 
-static bool write_minimal_binres(std::ostream& os, bool include_resource_header, std::string* error) {
+static bool write_minimal_binres(std::ostream& os, bool include_resource_header, bool big_endian, std::string* error) {
     // This is a minimal, structurally valid GUIX binres image.
     // It intentionally contains zero colors/fonts/pixelmaps and an empty string table.
     //
@@ -420,39 +685,36 @@ static bool write_minimal_binres(std::ostream& os, bool include_resource_header,
 
     if (include_resource_header) {
         // GX_RESOURCE_HEADER
-        write_u16_le(os, GX_MAGIC_NUMBER);
-        write_u16_le(os, GX_BINRES_VERSION_ADD_STRING_LENGTH);
-        write_u16_le(os, theme_count);
-        write_u16_le(os, language_count);
-        write_u32_le(os, theme_data_size);
-        write_u32_le(os, string_data_size);
-        write_u32_le(os, data_size);
+        write_u16(os, GX_MAGIC_NUMBER, big_endian);
+        write_u16(os, GX_BINRES_VERSION_ADD_STRING_LENGTH, big_endian);
+        write_u16(os, theme_count, big_endian);
+        write_u16(os, language_count, big_endian);
+        write_u32(os, theme_data_size, big_endian);
+        write_u32(os, string_data_size, big_endian);
+        write_u32(os, data_size, big_endian);
     }
 
     // GX_THEME_HEADER (114 bytes)
-    write_u16_le(os, GX_MAGIC_NUMBER);
-    write_u16_le(os, 0); // theme index
-    write_u16_le(os, 0); // color count
-    write_u16_le(os, 0); // palette count
-    write_u16_le(os, 0); // font count
-    write_u16_le(os, 0); // pixelmap count
+    write_u16(os, GX_MAGIC_NUMBER, big_endian);
+    write_u16(os, 0, big_endian); // theme index
+    write_u16(os, 0, big_endian); // color count
+    write_u16(os, 0, big_endian); // palette count
+    write_u16(os, 0, big_endian); // font count
+    write_u16(os, 0, big_endian); // pixelmap count
     // GX_SCROLLBAR_APPEARANCE vscroll (2*GX_VALUE + 2*GX_VALUE + GX_UBYTE + 4*ULONG + 3*ULONG) = 38 bytes
     // But we don't want to duplicate struct layout assumptions; just write zeros for the remaining theme header.
     // We already emitted 12 bytes above; the rest of the theme header is 102 bytes.
-    {
-        const std::string zeros(102, '\0');
-        os.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
-    }
+    write_zeros(os, 102);
 
     // GX_STRING_HEADER (10 bytes)
-    write_u16_le(os, GX_MAGIC_NUMBER);
-    write_u16_le(os, language_count);
-    write_u16_le(os, 0); // string count
-    write_u32_le(os, GX_LANGUAGE_HEADER_SIZE * language_count);
+    write_u16(os, GX_MAGIC_NUMBER, big_endian);
+    write_u16(os, language_count, big_endian);
+    write_u16(os, 0, big_endian); // string count
+    write_u32(os, GX_LANGUAGE_HEADER_SIZE * language_count, big_endian);
 
     // GX_LANGUAGE_HEADER (72 bytes)
-    write_u16_le(os, GX_MAGIC_NUMBER);
-    write_u16_le(os, 0); // language index
+    write_u16(os, GX_MAGIC_NUMBER, big_endian);
+    write_u16(os, 0, big_endian); // language index
     {
         // language name (64 bytes, NUL padded)
         const std::string name = "English";
@@ -461,7 +723,7 @@ static bool write_minimal_binres(std::ostream& os, bool include_resource_header,
         memcpy(buf, name.data(), n);
         os.write(buf, GX_LANGUAGE_HEADER_NAME_SIZE);
     }
-    write_u32_le(os, 0); // language data size
+    write_u32(os, 0, big_endian); // language data size
 
     if (!os) {
         if (error) *error = "Failed while writing binary resource output";
@@ -586,7 +848,9 @@ void print_usage(std::ostream& os) {
     os << "  guix_studio_cli export-resource-xml --project <path.gxp> [--output_path <dir>] [--display/-d <name>] [--theme/-t <name,name,...>] [--json]\n";
     os << "  guix_studio_cli generate --project <path.gxp> [--output_path <dir>] [--resource/-r [base]] [--specification/-s [base]] [--binary/-b]";
     os << " [--display/-d <name>] [--theme/-t <name,name,...>] [--language/-l <name,name,...>] [--json]\n";
-    os << "  guix_studio_cli generate --xml/-x <path.resource.xml> [--output_path <dir>] [--binary/-b] [--big_endian] [--no_res_header] [--json]\n\n";
+    os << "  guix_studio_cli generate --xml/-x <path.resource.xml> [--project_dir <dir>] [--output_path <dir>] [--binary/-b] [--big_endian] [--no_res_header] [--json]\n\n";
+
+    os << "  guix_studio_cli binres-inspect --input <path.bin> [--big_endian] [--no_res_header] [--json]\n\n";
 
     os << "  guix_studio_cli export-strings --project <path.gxp> --output <path.csv> --src <lang> [--target <lang> | --targets <lang,lang,...>] [--json]\n";
     os << "  guix_studio_cli import-strings --project <path.gxp> --input <path.csv> [--output <path.gxp> | --in-place] [--json]\n\n";
@@ -597,6 +861,179 @@ void print_usage(std::ostream& os) {
     os << "  - This is NOT a full replacement for the legacy Studio generator yet.\n";
     os << "  - Phase 1 generation currently exports a minimal resource-project XML only.\n";
     os << "  - Future phases will implement Studio-compatible C/spec/bin/srec outputs.\n";
+}
+
+int cmd_binres_inspect(const std::vector<std::string>& args) {
+    const auto input = arg_value_any(args, {"--input"});
+    if (!input) {
+        std::cerr << "Missing required flag: --input\n";
+        return 2;
+    }
+
+    const bool big_endian = has_flag_any(args, {"--big_endian"});
+    const bool no_res_header = has_flag_any(args, {"--no_res_header"});
+    const bool json = has_flag_any(args, {"--json"});
+
+    std::ifstream f(*input, std::ios::binary);
+    if (!f) {
+        std::cerr << "Unable to open input file: " << *input << "\n";
+        return 2;
+    }
+
+    std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    if (bytes.size() < 2) {
+        std::cerr << "Input too small to be a binres image\n";
+        return 1;
+    }
+
+    auto require = [&](size_t off, size_t n) -> bool {
+        return off + n <= bytes.size();
+    };
+
+    auto read_u16_at = [&](size_t off, uint16_t* out) -> bool {
+        if (!require(off, 2)) return false;
+        const uint16_t b0 = static_cast<uint16_t>(bytes[off + 0]);
+        const uint16_t b1 = static_cast<uint16_t>(bytes[off + 1]);
+        *out = big_endian ? static_cast<uint16_t>((b0 << 8) | b1) : static_cast<uint16_t>((b1 << 8) | b0);
+        return true;
+    };
+
+    auto read_u32_at = [&](size_t off, uint32_t* out) -> bool {
+        if (!require(off, 4)) return false;
+        const uint32_t b0 = static_cast<uint32_t>(bytes[off + 0]);
+        const uint32_t b1 = static_cast<uint32_t>(bytes[off + 1]);
+        const uint32_t b2 = static_cast<uint32_t>(bytes[off + 2]);
+        const uint32_t b3 = static_cast<uint32_t>(bytes[off + 3]);
+        *out = big_endian
+            ? ((b0 << 24) | (b1 << 16) | (b2 << 8) | b3)
+            : ((b3 << 24) | (b2 << 16) | (b1 << 8) | b0);
+        return true;
+    };
+
+    constexpr uint16_t GX_MAGIC_NUMBER = 0x4758U;
+    constexpr uint32_t GX_RESOURCE_HEADER_SIZE = 20;
+    constexpr uint32_t GX_THEME_HEADER_SIZE = 114;
+
+    const uint32_t resource_header_size = no_res_header ? 0U : GX_RESOURCE_HEADER_SIZE;
+    uint16_t theme_count = 1;
+    uint16_t language_count = 0;
+    uint32_t theme_data_size = 0;
+
+    if (!no_res_header) {
+        uint16_t magic = 0;
+        if (!read_u16_at(0, &magic) || magic != GX_MAGIC_NUMBER) {
+            std::cerr << "Unexpected GX_RESOURCE_HEADER magic\n";
+            return 1;
+        }
+        if (!read_u16_at(4, &theme_count) || !read_u16_at(6, &language_count)) {
+            std::cerr << "Unable to read resource header counts\n";
+            return 1;
+        }
+        if (!read_u32_at(8, &theme_data_size)) {
+            std::cerr << "Unable to read resource header theme_data_size\n";
+            return 1;
+        }
+        if (theme_count == 0) {
+            std::cerr << "Invalid theme_count in resource header\n";
+            return 1;
+        }
+    } else {
+        theme_count = 1; // cannot be inferred without a resource header
+    }
+
+    std::vector<uint32_t> theme_offsets;
+    std::vector<uint32_t> color_section_sizes;
+    std::vector<uint32_t> font_section_sizes;
+    std::vector<uint32_t> pixelmap_section_sizes;
+    std::vector<uint32_t> theme_total_data_sizes;
+    std::vector<uint32_t> pixelmap_section_offsets;
+
+    theme_offsets.reserve(theme_count);
+    color_section_sizes.reserve(theme_count);
+    font_section_sizes.reserve(theme_count);
+    pixelmap_section_sizes.reserve(theme_count);
+    theme_total_data_sizes.reserve(theme_count);
+    pixelmap_section_offsets.reserve(theme_count);
+
+    uint32_t theme_off = resource_header_size;
+    for (uint16_t ti = 0; ti < theme_count; ++ti) {
+        uint16_t magic = 0;
+        if (!read_u16_at(theme_off, &magic) || magic != GX_MAGIC_NUMBER) {
+            std::cerr << "Unexpected GX_THEME_HEADER magic at theme index " << ti << "\n";
+            return 1;
+        }
+
+        uint32_t color_size = 0;
+        uint32_t palette_size = 0;
+        uint32_t font_size = 0;
+        uint32_t pixelmap_size = 0;
+        uint32_t total_size = 0;
+
+        if (!read_u32_at(theme_off + 94, &color_size) ||
+            !read_u32_at(theme_off + 98, &palette_size) ||
+            !read_u32_at(theme_off + 102, &font_size) ||
+            !read_u32_at(theme_off + 106, &pixelmap_size) ||
+            !read_u32_at(theme_off + 110, &total_size)) {
+            std::cerr << "Unable to read theme section sizes at theme index " << ti << "\n";
+            return 1;
+        }
+
+        const uint32_t color_off = theme_off + GX_THEME_HEADER_SIZE;
+        const uint32_t font_off = color_off + color_size + palette_size;
+        const uint32_t pixelmap_off = font_off + font_size;
+
+        theme_offsets.push_back(theme_off);
+        color_section_sizes.push_back(color_size);
+        font_section_sizes.push_back(font_size);
+        pixelmap_section_sizes.push_back(pixelmap_size);
+        theme_total_data_sizes.push_back(total_size);
+        pixelmap_section_offsets.push_back(pixelmap_off);
+
+        theme_off = theme_off + GX_THEME_HEADER_SIZE + total_size;
+    }
+
+    const uint32_t string_header_offset = no_res_header
+        ? (resource_header_size + GX_THEME_HEADER_SIZE + theme_total_data_sizes[0])
+        : (resource_header_size + theme_data_size);
+
+    if (json) {
+        std::cout << "{\"ok\":true";
+        std::cout << ",\"input\":\"" << json_escape(*input) << "\"";
+        std::cout << ",\"big_endian\":" << (big_endian ? "true" : "false");
+        std::cout << ",\"include_resource_header\":" << (no_res_header ? "false" : "true");
+        std::cout << ",\"resource_header_size\":" << resource_header_size;
+        std::cout << ",\"theme_count\":" << theme_count;
+        if (!no_res_header) {
+            std::cout << ",\"language_count\":" << language_count;
+            std::cout << ",\"theme_data_size\":" << theme_data_size;
+        }
+        std::cout << ",\"string_header_offset\":" << string_header_offset;
+
+        auto emit_u32_array = [&](const char* key, const std::vector<uint32_t>& vals) {
+            std::cout << ",\"" << key << "\":[";
+            for (size_t i = 0; i < vals.size(); ++i) {
+                if (i) std::cout << ",";
+                std::cout << vals[i];
+            }
+            std::cout << "]";
+        };
+
+        emit_u32_array("theme_offsets", theme_offsets);
+        emit_u32_array("color_section_sizes", color_section_sizes);
+        emit_u32_array("font_section_sizes", font_section_sizes);
+        emit_u32_array("pixelmap_section_sizes", pixelmap_section_sizes);
+        emit_u32_array("theme_total_data_sizes", theme_total_data_sizes);
+        emit_u32_array("pixelmap_section_offsets", pixelmap_section_offsets);
+        std::cout << "}\n";
+        return 0;
+    }
+
+    std::cout << "Themes: " << theme_count << "\n";
+    for (size_t i = 0; i < theme_offsets.size(); ++i) {
+        std::cout << "  theme[" << i << "] off=" << theme_offsets[i] << " pixelmap_off=" << pixelmap_section_offsets[i] << "\n";
+    }
+    std::cout << "string_header_offset=" << string_header_offset << "\n";
+    return 0;
 }
 
 int cmd_format_gxp(const std::vector<std::string>& args) {
@@ -1180,6 +1617,7 @@ int cmd_generate(const std::vector<std::string>& args) {
 
     const auto project = arg_value_any(args, {"--project", "-p"});
     const auto xml_in = arg_value_any(args, {"--xml", "-x"});
+    const auto project_dir_arg = arg_value_any(args, {"--project_dir"});
     const auto output_path_arg = arg_value_any(args, {"--output_path"});
     const bool json = has_flag_any(args, {"--json"});
 
@@ -1191,8 +1629,6 @@ int cmd_generate(const std::vector<std::string>& args) {
     const bool binary = has_flag_any(args, {"--binary", "-b"});
     const bool big_endian = has_flag_any(args, {"--big_endian"});
     const bool no_res_header = has_flag_any(args, {"--no_res_header"});
-
-    (void)big_endian; // Not yet honored for binres payloads (future work).
 
     const auto display_arg = arg_value_any(args, {"--display", "-d"});
     const auto theme_arg = arg_value_any(args, {"--theme", "-t"});
@@ -1211,6 +1647,19 @@ int cmd_generate(const std::vector<std::string>& args) {
 
     if (xml_in && (!display_filters.empty() || !theme_filters.empty() || !language_filters.empty())) {
         warnings.push_back("--display/--theme/--language are ignored when using --xml input");
+    }
+
+    std::optional<std::filesystem::path> xml_asset_base_dir;
+    if (xml_in && project_dir_arg && !project_dir_arg->empty()) {
+        std::filesystem::path base(*project_dir_arg);
+        if (base.is_relative()) {
+            base = (std::filesystem::current_path() / base).lexically_normal();
+        }
+        if (!std::filesystem::exists(base) || !std::filesystem::is_directory(base)) {
+            std::cerr << "Invalid --project_dir (not a directory): " << base.string() << "\n";
+            return 2;
+        }
+        xml_asset_base_dir = base;
     }
 
     // Resolve output dir.
@@ -1522,9 +1971,108 @@ int cmd_generate(const std::vector<std::string>& args) {
             // Phase 2+ work: real Studio-parity binres generation.
             // For now, emit a minimal, loadable GUIX binres file so loaders/tools can consume it.
             //
-            // NOTE: `--big_endian` is not yet honored for binres payloads (future work).
+            // NOTE: `--big_endian` is honored for integer serialization. Payload parity
+            // (fonts/pixelmaps beyond headers) will be added incrementally.
             std::string err;
             const bool include_header = !no_res_header;
+
+            // When generating a binary from resource XML, Studio expects pixelmap source
+            // assets referenced by the resource project to exist on disk. Even though
+            // this CLI currently falls back to a minimal binres in XML-input mode,
+            // validate referenced pixelmap assets to keep error handling consistent.
+            if (xml_in) {
+                auto parsed = studio_core::parse_xml_file(resource_xml_path.string());
+                if (!parsed.ok) {
+                    std::cerr << parsed.error << "\n";
+                    return 1;
+                }
+
+                const std::filesystem::path xml_dir = resource_xml_path.parent_path();
+                const std::filesystem::path cwd = std::filesystem::current_path();
+
+                auto normalize_path_text = [](std::string s) -> std::string {
+                    std::replace(s.begin(), s.end(), '\\', '/');
+                    return s;
+                };
+
+                auto resolve_existing_path = [&](const std::string& path_text) -> std::optional<std::filesystem::path> {
+                    if (path_text.empty()) return std::nullopt;
+
+                    std::filesystem::path p(normalize_path_text(path_text));
+                    if (!p.is_relative()) {
+                        if (std::filesystem::exists(p)) return p;
+                        return std::nullopt;
+                    }
+
+                    if (xml_asset_base_dir) {
+                        const auto cand = (*xml_asset_base_dir / p).lexically_normal();
+                        if (std::filesystem::exists(cand)) return cand;
+                    }
+                    if (!xml_dir.empty()) {
+                        const auto cand = (xml_dir / p).lexically_normal();
+                        if (std::filesystem::exists(cand)) return cand;
+                    }
+                    if (!cwd.empty()) {
+                        const auto cand = (cwd / p).lexically_normal();
+                        if (std::filesystem::exists(cand)) return cand;
+                    }
+                    return std::nullopt;
+                };
+
+                auto best_effort_missing_path = [&](const std::string& path_text) -> std::filesystem::path {
+                    std::filesystem::path p(normalize_path_text(path_text));
+                    if (!p.is_relative()) return p;
+                    if (xml_asset_base_dir) return (*xml_asset_base_dir / p).lexically_normal();
+                    if (!cwd.empty()) return (cwd / p).lexically_normal();
+                    if (!xml_dir.empty()) return (xml_dir / p).lexically_normal();
+                    return p;
+                };
+
+                std::string fatal_asset_error;
+                std::function<void(const studio_core::XmlNode&)> walk;
+                walk = [&](const studio_core::XmlNode& n) {
+                    if (!fatal_asset_error.empty()) return;
+
+                    if (n.name == "resource") {
+                        const auto* t = n.firstChild("type");
+                        if (t && t->text == "PIXELMAP") {
+                            std::string pathname;
+                            std::string pathtype;
+                            if (const auto* pi = n.firstChild("pathinfo")) {
+                                if (const auto* pn = pi->firstChild("pathname")) pathname = pn->text;
+                                if (const auto* pt = pi->firstChild("pathtype")) pathtype = pt->text;
+                            }
+
+                            // Default per exported XML.
+                            if (pathtype.empty()) pathtype = "project_relative";
+
+                            // For now, only validate file-backed pixelmaps where a pathname is provided.
+                            if (!pathname.empty()) {
+                                if (pathtype == "project_relative" || pathtype == "absolute") {
+                                    if (!resolve_existing_path(pathname)) {
+                                        fatal_asset_error = "Missing pixelmap source asset: " + best_effort_missing_path(pathname).string();
+                                        if (std::filesystem::path(normalize_path_text(pathname)).is_relative() && !xml_asset_base_dir) {
+                                            fatal_asset_error += "\nHint: run from the project directory or pass --project_dir <dir> to resolve project_relative assets.";
+                                        }
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    for (const auto& ch : n.children) {
+                        walk(ch);
+                        if (!fatal_asset_error.empty()) return;
+                    }
+                };
+
+                walk(parsed.doc.root);
+                if (!fatal_asset_error.empty()) {
+                    std::cerr << fatal_asset_error << "\n";
+                    return 1;
+                }
+            }
 
             bool wrote = false;
             if (have_parsed_gxp && selected_display) {
@@ -1538,8 +2086,16 @@ int cmd_generate(const std::vector<std::string>& args) {
                         // Per-theme font resources (ordered). Phase-1 emits these as default system fonts.
                         std::vector<uint8_t> font_bits;
 
-                        // Per-theme pixelmap resources (ordered). Phase-1 emits these as header-only pixelmaps.
-                        size_t pixelmap_count = 0;
+                        struct ParsedPixelmap {
+                            std::string name;
+                            std::string pathname;
+                            bool output_file_enabled = false;
+                            bool binary_mode = false;
+                            bool raw = false;
+                        };
+
+                        // Per-theme pixelmap resources (ordered).
+                        std::vector<ParsedPixelmap> pixelmaps;
 
                         BinresThemeData::ScrollbarAppearance vscroll;
                         BinresThemeData::ScrollbarAppearance hscroll;
@@ -1732,7 +2288,33 @@ int cmd_generate(const std::vector<std::string>& args) {
                                                 }
                                             }
 
-                                            current->pixelmap_count++;
+                                            ParsedTheme::ParsedPixelmap pm;
+                                            if (const auto* nm = n.firstChild("name")) {
+                                                pm.name = nm->text;
+                                            }
+                                            if (const auto* pi = n.firstChild("pathinfo")) {
+                                                if (const auto* pn = pi->firstChild("pathname")) {
+                                                    pm.pathname = pn->text;
+                                                }
+                                            }
+
+                                            if (const auto* ofe = n.firstChild("output_file_enabled")) {
+                                                std::string e = ofe->text;
+                                                std::transform(e.begin(), e.end(), e.begin(), [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+                                                pm.output_file_enabled = (e == "TRUE");
+                                            }
+                                            if (const auto* bm = n.firstChild("binary_mode")) {
+                                                std::string e = bm->text;
+                                                std::transform(e.begin(), e.end(), e.begin(), [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+                                                pm.binary_mode = (e == "TRUE");
+                                            }
+                                            if (const auto* rw = n.firstChild("raw")) {
+                                                std::string e = rw->text;
+                                                std::transform(e.begin(), e.end(), e.begin(), [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+                                                pm.raw = (e == "TRUE");
+                                            }
+
+                                            current->pixelmaps.push_back(std::move(pm));
                                         }
                                     } else if (n.name == "vscroll_appearance" && current) {
                                         parse_scroll_appearance(n, *current, true);
@@ -1774,12 +2356,28 @@ int cmd_generate(const std::vector<std::string>& args) {
                                     td.fonts.push_back(fe);
                                 }
 
-                                td.pixelmaps.reserve(known_themes[i].pixelmap_count);
-                                for (size_t pi = 0; pi < known_themes[i].pixelmap_count; ++pi) {
+                                td.pixelmaps.reserve(known_themes[i].pixelmaps.size());
+                                const std::filesystem::path project_dir = std::filesystem::path(*project).parent_path();
+                                for (size_t pi = 0; pi < known_themes[i].pixelmaps.size(); ++pi) {
+                                    const auto& src = known_themes[i].pixelmaps[pi];
                                     BinresThemeData::PixelmapEntry pm;
                                     pm.index = static_cast<uint16_t>(pi + 1); // pixelmap IDs start at 1
                                     pm.format = 22; // GX_COLOR_FORMAT_32ARGB
-                                    td.pixelmaps.push_back(pm);
+                                    pm.output_file_enabled = src.output_file_enabled;
+                                    pm.binary_mode = src.binary_mode;
+                                    pm.raw = src.raw;
+
+                                    if (!src.pathname.empty()) {
+                                        std::string normalized = src.pathname;
+                                        std::replace(normalized.begin(), normalized.end(), '\\', '/');
+                                        std::filesystem::path rel(normalized);
+                                        if (rel.is_relative()) {
+                                            pm.source_path = (project_dir / rel);
+                                        } else {
+                                            pm.source_path = rel;
+                                        }
+                                    }
+                                    td.pixelmaps.push_back(std::move(pm));
                                 }
 
                                 td.vscroll = known_themes[i].vscroll;
@@ -1867,8 +2465,106 @@ int cmd_generate(const std::vector<std::string>& args) {
                             }
                         }
 
-                        wrote = write_binres_with_strings(f, include_header, themes, tbl, &err);
+                        wrote = write_binres_with_strings(f, include_header, big_endian, themes, tbl, &err);
+                        if (!wrote && !err.empty()) {
+                            std::cerr << err << "\n";
+                            return 1;
+                        }
                     }
+                }
+            } else if (xml_in) {
+                // Resource-XML input mode: build a minimal theme from <resource> entries.
+                // This is intentionally small-scope (pixelmaps + basic font list) but
+                // produces a loadable binres and exercises the same writer.
+
+                auto parsed = studio_core::parse_xml_file(resource_xml_path.string());
+                if (!parsed.ok) {
+                    std::cerr << parsed.error << "\n";
+                    return 1;
+                }
+
+                const std::filesystem::path xml_dir = resource_xml_path.parent_path();
+                const std::filesystem::path cwd = std::filesystem::current_path();
+
+                auto normalize_path_text = [](std::string s) -> std::string {
+                    std::replace(s.begin(), s.end(), '\\', '/');
+                    return s;
+                };
+
+                auto resolve_resource_xml_path = [&](const std::string& path_text) -> std::filesystem::path {
+                    std::filesystem::path p(normalize_path_text(path_text));
+                    if (!p.is_relative()) return p;
+                    if (xml_asset_base_dir) return (*xml_asset_base_dir / p).lexically_normal();
+                    if (!cwd.empty()) return (cwd / p).lexically_normal();
+                    if (!xml_dir.empty()) return (xml_dir / p).lexically_normal();
+                    return p;
+                };
+
+                BinresThemeData td;
+                td.theme_id = 0;
+
+                uint16_t next_pixelmap_id = 1;
+                uint16_t next_font_id = 0;
+
+                std::function<void(const studio_core::XmlNode&)> walk;
+                walk = [&](const studio_core::XmlNode& n) {
+                    if (n.name == "resource") {
+                        const auto type = studio_core::node_text(n, "type");
+                        if (type && *type == "PIXELMAP") {
+                            std::string pathname;
+                            if (const auto* pi = n.firstChild("pathinfo")) {
+                                if (const auto* pn = pi->firstChild("pathname")) {
+                                    pathname = pn->text;
+                                }
+                            }
+
+                            BinresThemeData::PixelmapEntry pm;
+                            pm.index = next_pixelmap_id++; // pixelmap IDs start at 1
+                            pm.format = 22; // GX_COLOR_FORMAT_32ARGB
+
+                            if (!pathname.empty()) {
+                                pm.source_path = resolve_resource_xml_path(pathname);
+                                // In XML mode, a pixelmap pathname implies we should embed it.
+                                pm.output_file_enabled = true;
+                                pm.binary_mode = true;
+                            }
+
+                            if (const auto raw = studio_core::node_bool(n, "raw")) {
+                                pm.raw = *raw;
+                            }
+
+                            td.pixelmaps.push_back(std::move(pm));
+                        } else if (type && *type == "FONT") {
+                            BinresThemeData::FontEntry fe;
+                            fe.index = next_font_id++;
+                            fe.is_default = true;
+                            fe.bits = 8;
+                            if (const auto fb = studio_core::node_int(n, "font_bits")) {
+                                if (*fb >= 0 && *fb <= 0xFF) {
+                                    fe.bits = static_cast<uint8_t>(*fb);
+                                }
+                            }
+                            td.fonts.push_back(fe);
+                        }
+                    }
+
+                    for (const auto& ch : n.children) {
+                        walk(ch);
+                    }
+                };
+                walk(parsed.doc.root);
+
+                // Dummy string table (loadable, but empty): 1 language, reserved index 0 only.
+                BinresStringTable tbl;
+                tbl.language_names = {"EN"};
+                tbl.string_count = 1;
+                tbl.strings.resize(1);
+                tbl.strings[0].resize(1);
+
+                wrote = write_binres_with_strings(f, include_header, big_endian, {td}, tbl, &err);
+                if (!wrote && !err.empty()) {
+                    std::cerr << err << "\n";
+                    return 1;
                 }
             }
 
@@ -1877,7 +2573,7 @@ int cmd_generate(const std::vector<std::string>& args) {
                     warnings.push_back("Binary generation fallback: " + err);
                 }
                 err.clear();
-                if (!write_minimal_binres(f, include_header, &err)) {
+                if (!write_minimal_binres(f, include_header, big_endian, &err)) {
                     std::cerr << err << "\n";
                     return 1;
                 }
@@ -2117,6 +2813,10 @@ int main(int argc, char** argv) {
 
     if (command == "export-resource-xml") {
         return cmd_export_resource_xml(rest);
+    }
+
+    if (command == "binres-inspect") {
+        return cmd_binres_inspect(rest);
     }
 
     if (command == "generate") {

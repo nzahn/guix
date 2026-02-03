@@ -45,6 +45,36 @@ if(NOT EXISTS "${bin}")
   message(FATAL_ERROR "Expected binary output not created: ${bin}")
 endif()
 
+# Use the CLI's binres inspector to locate section offsets.
+execute_process(
+  COMMAND "${GUIX_STUDIO_CLI}" binres-inspect --input "${bin}" --json
+  RESULT_VARIABLE rv_ins
+  OUTPUT_VARIABLE out_ins
+  ERROR_VARIABLE err_ins
+)
+
+if(NOT rv_ins EQUAL 0)
+  message(FATAL_ERROR "binres-inspect failed (rv=${rv_ins})\nstdout:\n${out_ins}\nstderr:\n${err_ins}\n")
+endif()
+
+string(REGEX MATCH "\"theme_offsets\":\\[([0-9]+)\\]" m_theme_offsets "${out_ins}")
+if(NOT m_theme_offsets)
+  message(FATAL_ERROR "Unable to find theme_offsets in binres-inspect JSON:\n${out_ins}")
+endif()
+set(theme0_off ${CMAKE_MATCH_1})
+
+string(REGEX MATCH "\"pixelmap_section_offsets\":\\[([0-9]+)\\]" m_px_offsets "${out_ins}")
+if(NOT m_px_offsets)
+  message(FATAL_ERROR "Unable to find pixelmap_section_offsets in binres-inspect JSON:\n${out_ins}")
+endif()
+set(pixelmap0_off ${CMAKE_MATCH_1})
+
+string(REGEX MATCH "\"string_header_offset\":([0-9]+)" m_str_off "${out_ins}")
+if(NOT m_str_off)
+  message(FATAL_ERROR "Unable to find string_header_offset in binres-inspect JSON:\n${out_ins}")
+endif()
+set(string_hdr_off_ins ${CMAKE_MATCH_1})
+
 function(read_u16_le out_var offset)
   file(READ "${bin}" tmp_hex HEX OFFSET ${offset} LIMIT 2)
   string(TOUPPER "${tmp_hex}" tmp_hex)
@@ -79,13 +109,16 @@ set(RES_HDR_SIZE 20)
 read_u16_le(theme_count 4)
 read_u32_le(theme_data_size 8)
 
+if(NOT theme0_off EQUAL ${RES_HDR_SIZE})
+  message(FATAL_ERROR "Unexpected theme0 offset from binres-inspect. Expected ${RES_HDR_SIZE}, got ${theme0_off}")
+endif()
+
 if(NOT theme_count EQUAL 1)
   message(FATAL_ERROR "Unexpected theme_count (theme filter should select one theme): ${theme_count}")
 endif()
 
 # GX_THEME_HEADER starts immediately after resource header.
 set(THEME_HDR_SIZE 114)
-set(theme0_off ${RES_HDR_SIZE})
 read_u16_le(theme0_magic ${theme0_off})
 math(EXPR theme0_index_off "${theme0_off} + 2")
 read_u16_le(theme0_index ${theme0_index_off})
@@ -171,12 +204,11 @@ endif()
 math(EXPR theme0_pixelmap_data_size_off "${theme0_off} + 106")
 read_u32_le(theme0_pixelmap_data_size ${theme0_pixelmap_data_size_off})
 math(EXPR expected_pixelmap_data_size "${theme0_pixelmap_count} * 32")
-if(NOT theme0_pixelmap_data_size EQUAL expected_pixelmap_data_size)
-  message(FATAL_ERROR "Unexpected theme0_pixelmap_data_size. Expected ${expected_pixelmap_data_size}, got ${theme0_pixelmap_data_size}")
+if(theme0_pixelmap_data_size LESS expected_pixelmap_data_size)
+  message(FATAL_ERROR "Unexpected theme0_pixelmap_data_size. Expected >= ${expected_pixelmap_data_size}, got ${theme0_pixelmap_data_size}")
 endif()
 
 # First GX_PIXELMAP_HEADER should appear after GX_THEME_HEADER + color section + font section.
-math(EXPR pixelmap0_off "${theme0_off} + 114 + ${theme0_color_section_size} + ${theme0_font_data_size}")
 read_u16_le(pixelmap0_magic ${pixelmap0_off})
 if(NOT pixelmap0_magic EQUAL 0x4758)
   message(FATAL_ERROR "Unexpected GX_PIXELMAP_HEADER magic: ${pixelmap0_magic}")
@@ -239,7 +271,11 @@ if(NOT color_data_size EQUAL expected_color_data_size)
 endif()
 
 # Validate string header is reachable via resource header's theme_data_size.
-math(EXPR string_hdr_off "${RES_HDR_SIZE} + ${theme_data_size}")
+math(EXPR string_hdr_off_expected "${RES_HDR_SIZE} + ${theme_data_size}")
+if(NOT string_hdr_off_expected EQUAL string_hdr_off_ins)
+  message(FATAL_ERROR "Unexpected string header offset. Expected ${string_hdr_off_expected} from resource header, got ${string_hdr_off_ins} from binres-inspect")
+endif()
+set(string_hdr_off ${string_hdr_off_ins})
 read_u16_le(str_magic ${string_hdr_off})
 if(NOT str_magic EQUAL 0x4758)
   message(FATAL_ERROR "Unexpected GX_STRING_HEADER magic: ${str_magic}")

@@ -1,0 +1,230 @@
+# Smoke test for `guix_studio_cli generate --binary --big_endian`.
+#
+# Verifies we serialize binres integer fields in big-endian form, and that
+# key theme header fields decode correctly when interpreted as big-endian.
+
+if(NOT DEFINED GUIX_STUDIO_CLI)
+  message(FATAL_ERROR "GUIX_STUDIO_CLI not set")
+endif()
+if(NOT DEFINED GUIX_PROJECT)
+  message(FATAL_ERROR "GUIX_PROJECT not set")
+endif()
+if(NOT DEFINED OUT_DIR)
+  message(FATAL_ERROR "OUT_DIR not set")
+endif()
+
+file(REMOVE_RECURSE "${OUT_DIR}")
+file(MAKE_DIRECTORY "${OUT_DIR}")
+
+execute_process(
+  COMMAND "${GUIX_STUDIO_CLI}" generate --project "${GUIX_PROJECT}" --output_path "${OUT_DIR}" --binary --big_endian --json
+  RESULT_VARIABLE rv
+  OUTPUT_VARIABLE out
+  ERROR_VARIABLE err
+)
+
+if(NOT rv EQUAL 0)
+  message(FATAL_ERROR "generate --binary --big_endian failed (rv=${rv})\nstdout:\n${out}\nstderr:\n${err}\n")
+endif()
+
+# Extract the binary output path from JSON.
+string(REGEX MATCH "\"kind\"\\s*:\\s*\"binary\"\\s*,\\s*\"path\"\\s*:\\s*\"([^\"]+)\"" m "${out}")
+if(NOT m)
+  message(FATAL_ERROR "Unable to find binary output path in JSON:\n${out}")
+endif()
+set(bin "${CMAKE_MATCH_1}")
+
+if(NOT EXISTS "${bin}")
+  message(FATAL_ERROR "Expected binary output not created: ${bin}")
+endif()
+
+# Use the CLI's binres inspector to locate section offsets.
+execute_process(
+  COMMAND "${GUIX_STUDIO_CLI}" binres-inspect --input "${bin}" --json --big_endian
+  RESULT_VARIABLE rv_ins
+  OUTPUT_VARIABLE out_ins
+  ERROR_VARIABLE err_ins
+)
+
+if(NOT rv_ins EQUAL 0)
+  message(FATAL_ERROR "binres-inspect failed (rv=${rv_ins})\nstdout:\n${out_ins}\nstderr:\n${err_ins}\n")
+endif()
+
+string(REGEX MATCH "\"theme_offsets\":\\[([0-9]+)\\]" m_theme_offsets "${out_ins}")
+if(NOT m_theme_offsets)
+  message(FATAL_ERROR "Unable to find theme_offsets in binres-inspect JSON:\n${out_ins}")
+endif()
+set(theme0_off ${CMAKE_MATCH_1})
+
+string(REGEX MATCH "\"pixelmap_section_offsets\":\\[([0-9]+)\\]" m_px_offsets "${out_ins}")
+if(NOT m_px_offsets)
+  message(FATAL_ERROR "Unable to find pixelmap_section_offsets in binres-inspect JSON:\n${out_ins}")
+endif()
+set(pixelmap0_off ${CMAKE_MATCH_1})
+
+# Resource header starts at offset 0 when present.
+# Validate the first 4 bytes are big-endian:
+#   magic:   0x4758 => bytes 47 58
+#   version: 50600 (0xC5A8) => bytes C5 A8
+file(READ "${bin}" hdr4_hex HEX OFFSET 0 LIMIT 4)
+string(TOUPPER "${hdr4_hex}" hdr4_hex)
+if(NOT "${hdr4_hex}" STREQUAL "4758C5A8")
+  message(FATAL_ERROR "Unexpected big-endian header prefix. Expected 4758C5A8, got ${hdr4_hex} (file=${bin})")
+endif()
+
+function(read_u16_be out_var offset)
+  file(READ "${bin}" tmp_hex HEX OFFSET ${offset} LIMIT 2)
+  string(TOUPPER "${tmp_hex}" tmp_hex)
+  math(EXPR val "0x${tmp_hex}")
+  set(${out_var} ${val} PARENT_SCOPE)
+endfunction()
+
+function(read_u32_be out_var offset)
+  file(READ "${bin}" tmp_hex HEX OFFSET ${offset} LIMIT 4)
+  string(TOUPPER "${tmp_hex}" tmp_hex)
+  math(EXPR val "0x${tmp_hex}")
+  set(${out_var} ${val} PARENT_SCOPE)
+endfunction()
+
+function(read_u8 out_var offset)
+  file(READ "${bin}" tmp_hex HEX OFFSET ${offset} LIMIT 1)
+  string(TOUPPER "${tmp_hex}" tmp_hex)
+  math(EXPR val "0x${tmp_hex}")
+  set(${out_var} ${val} PARENT_SCOPE)
+endfunction()
+
+function(read_u32_be_file path out_var offset)
+  file(READ "${path}" tmp_hex HEX OFFSET ${offset} LIMIT 4)
+  string(TOUPPER "${tmp_hex}" tmp_hex)
+  string(SUBSTRING "${tmp_hex}" 0 2 b0)
+  string(SUBSTRING "${tmp_hex}" 2 2 b1)
+  string(SUBSTRING "${tmp_hex}" 4 2 b2)
+  string(SUBSTRING "${tmp_hex}" 6 2 b3)
+  set(val_hex "${b0}${b1}${b2}${b3}")
+  math(EXPR val "0x${val_hex}")
+  set(${out_var} ${val} PARENT_SCOPE)
+endfunction()
+
+set(RES_HDR_SIZE 20)
+
+if(NOT theme0_off EQUAL ${RES_HDR_SIZE})
+  message(FATAL_ERROR "Unexpected theme0 offset from binres-inspect. Expected ${RES_HDR_SIZE}, got ${theme0_off}")
+endif()
+
+# Sanity check a few fields we already validate in the LE smoke test, but decode them as BE.
+math(EXPR vscroll_width_off "${theme0_off} + 12")
+read_u16_be(vscroll_width ${vscroll_width_off})
+if(NOT vscroll_width EQUAL 20)
+  message(FATAL_ERROR "Unexpected vscroll width (BE). Expected 20, got ${vscroll_width}")
+endif()
+
+math(EXPR hscroll_width_off "${theme0_off} + 49")
+read_u16_be(hscroll_width ${hscroll_width_off})
+if(NOT hscroll_width EQUAL 20)
+  message(FATAL_ERROR "Unexpected hscroll width (BE). Expected 20, got ${hscroll_width}")
+endif()
+
+math(EXPR vscroll_style_off "${theme0_off} + 86")
+read_u32_be(vscroll_style ${vscroll_style_off})
+if(NOT vscroll_style EQUAL 17170432)
+  message(FATAL_ERROR "Unexpected vscroll style (BE). Expected 17170432, got ${vscroll_style}")
+endif()
+
+math(EXPR hscroll_style_off "${theme0_off} + 90")
+read_u32_be(hscroll_style ${hscroll_style_off})
+if(NOT hscroll_style EQUAL 33947648)
+  message(FATAL_ERROR "Unexpected hscroll style (BE). Expected 33947648, got ${hscroll_style}")
+endif()
+
+# Font section presence.
+math(EXPR theme0_font_count_off "${theme0_off} + 8")
+read_u16_be(theme0_font_count ${theme0_font_count_off})
+if(theme0_font_count LESS 1)
+  message(FATAL_ERROR "Expected theme0_font_count >= 1 (BE), got ${theme0_font_count}")
+endif()
+
+math(EXPR theme0_font_data_size_off "${theme0_off} + 102")
+read_u32_be(theme0_font_data_size ${theme0_font_data_size_off})
+math(EXPR expected_font_data_size "${theme0_font_count} * 16")
+if(NOT theme0_font_data_size EQUAL expected_font_data_size)
+  message(FATAL_ERROR "Unexpected theme0_font_data_size (BE). Expected ${expected_font_data_size}, got ${theme0_font_data_size}")
+endif()
+
+# Color section size determines where font headers start.
+math(EXPR theme0_color_data_size_off "${theme0_off} + 94")
+read_u32_be(theme0_color_section_size ${theme0_color_data_size_off})
+math(EXPR font0_off "${theme0_off} + 114 + ${theme0_color_section_size}")
+read_u16_be(font0_magic ${font0_off})
+if(NOT font0_magic EQUAL 0x4758)
+  message(FATAL_ERROR "Unexpected GX_FONT_HEADER magic (BE): ${font0_magic}")
+endif()
+math(EXPR font0_default_off "${font0_off} + 6")
+read_u8(font0_default ${font0_default_off})
+if(NOT font0_default EQUAL 1)
+  message(FATAL_ERROR "Expected default font flag == 1 (BE), got ${font0_default}")
+endif()
+math(EXPR font0_data_size_off "${font0_off} + 8")
+read_u32_be(font0_data_size ${font0_data_size_off})
+if(NOT font0_data_size EQUAL 0)
+  message(FATAL_ERROR "Expected default font data_size == 0 (BE), got ${font0_data_size}")
+endif()
+
+# Pixelmap section presence.
+math(EXPR theme0_pixelmap_count_off "${theme0_off} + 10")
+read_u16_be(theme0_pixelmap_count ${theme0_pixelmap_count_off})
+if(theme0_pixelmap_count LESS 1)
+  message(FATAL_ERROR "Expected theme0_pixelmap_count >= 1 (BE), got ${theme0_pixelmap_count}")
+endif()
+
+math(EXPR theme0_pixelmap_data_size_off "${theme0_off} + 106")
+read_u32_be(theme0_pixelmap_data_size ${theme0_pixelmap_data_size_off})
+math(EXPR expected_pixelmap_data_size "${theme0_pixelmap_count} * 32")
+if(theme0_pixelmap_data_size LESS expected_pixelmap_data_size)
+  message(FATAL_ERROR "Unexpected theme0_pixelmap_data_size (BE). Expected >= ${expected_pixelmap_data_size}, got ${theme0_pixelmap_data_size}")
+endif()
+
+read_u16_be(pixelmap0_magic ${pixelmap0_off})
+if(NOT pixelmap0_magic EQUAL 0x4758)
+  message(FATAL_ERROR "Unexpected GX_PIXELMAP_HEADER magic (BE): ${pixelmap0_magic}")
+endif()
+math(EXPR pixelmap0_index_off "${pixelmap0_off} + 2")
+read_u16_be(pixelmap0_index ${pixelmap0_index_off})
+if(NOT pixelmap0_index EQUAL 1)
+  message(FATAL_ERROR "Unexpected first pixelmap index (BE). Expected 1, got ${pixelmap0_index}")
+endif()
+
+# Phase-3: verify we emit a real uncompressed 32ARGB payload for the first
+# pixelmap in this fixture (RADIO_ON: graphics/radiobutton_on.png).
+get_filename_component(PROJECT_DIR "${GUIX_PROJECT}" DIRECTORY)
+set(png "${PROJECT_DIR}/graphics/radiobutton_on.png")
+if(EXISTS "${png}")
+  read_u32_be_file("${png}" png_w 16)
+  read_u32_be_file("${png}" png_h 20)
+  if(png_w LESS 1 OR png_h LESS 1)
+    message(FATAL_ERROR "Unexpected PNG dimensions for ${png}: ${png_w}x${png_h}")
+  endif()
+
+  math(EXPR pixelmap0_map_size_off "${pixelmap0_off} + 8")
+  read_u32_be(pixelmap0_map_size ${pixelmap0_map_size_off})
+  math(EXPR expected_map_size "${png_w} * ${png_h} * 4")
+  if(NOT pixelmap0_map_size EQUAL expected_map_size)
+    message(FATAL_ERROR "Unexpected pixelmap0 map_size (BE). Expected ${expected_map_size}, got ${pixelmap0_map_size}")
+  endif()
+
+  math(EXPR pixelmap0_data_size_off "${pixelmap0_off} + 24")
+  read_u32_be(pixelmap0_data_size ${pixelmap0_data_size_off})
+  if(NOT pixelmap0_data_size EQUAL expected_map_size)
+    message(FATAL_ERROR "Unexpected pixelmap0 data_size (BE). Expected ${expected_map_size}, got ${pixelmap0_data_size}")
+  endif()
+
+  math(EXPR pixelmap0_width_off "${pixelmap0_off} + 20")
+  read_u16_be(pixelmap0_width ${pixelmap0_width_off})
+  math(EXPR pixelmap0_height_off "${pixelmap0_off} + 22")
+  read_u16_be(pixelmap0_height ${pixelmap0_height_off})
+  if(NOT pixelmap0_width EQUAL png_w)
+    message(FATAL_ERROR "Unexpected pixelmap0 width (BE). Expected ${png_w}, got ${pixelmap0_width}")
+  endif()
+  if(NOT pixelmap0_height EQUAL png_h)
+    message(FATAL_ERROR "Unexpected pixelmap0 height (BE). Expected ${png_h}, got ${pixelmap0_height}")
+  endif()
+endif()

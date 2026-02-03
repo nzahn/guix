@@ -106,7 +106,7 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
 
 - [x] Create a new CMake target for a console app: [tools/guix_studio_cli/](tools/guix_studio_cli/)
 - [ ] Refactor Studio code into layers (ordered, safe migration)
-  - [ ] Create a `studio_core` library target in CMake (portable)
+  - [x] Create a `studio_core` library target in CMake (portable) (see [tools/guix_studio_cli/CMakeLists.txt](tools/guix_studio_cli/CMakeLists.txt))
   - [ ] Identify the minimal public surface area for `studio_core`
     - Project model + XML read/write
     - Resource XML generator
@@ -140,23 +140,26 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
 - [ ] Implement/port resource generation and binary resource generation
   - [x] `generate --binary` emits a minimal, loadable GUIX binres (headers + string table; includes theme color table + scrollbar appearance/styles + a minimal font section (default/system fonts) + a minimal pixelmap section (header-only); smoke tested for multi-language + `--no_res_header`)
   - [ ] Full Studio-parity binres generation (ordered, incremental)
-    - [ ] Document the binres layout contract we’re targeting (sections, sizes, alignment/padding, loader expectations)
+    - [x] Document the binres layout contract we’re targeting (sections, sizes, alignment/padding, loader expectations)
+      - Doc: [docs/binres_layout_contract.md](docs/binres_layout_contract.md)
       - Reference: `common/src/gx_binres_theme_load.c` (reader) and `guix_studio/binary_resource_gen.cpp` (writer)
     - [ ] Consolidate binres writer helpers (single source of truth)
-      - [ ] `write_u16/write_u32` that honor `--big_endian`
-      - [ ] `pad_to_4` and a single alignment policy used everywhere
-      - [ ] One place that computes offsets/sizes (avoid “recompute in tests” drift)
+      - [x] `write_u16/write_u32` that honor `--big_endian`
+      - [x] `pad_to_4` and a single alignment policy used everywhere
+      - [x] One place that computes offsets/sizes (avoid “recompute in tests” drift)
     - [ ] Make `--big_endian` real for binres (not just accepted)
-      - [ ] All serialized integer fields (resource header, theme header, section headers)
-      - [ ] All payload words where Studio swaps (fonts and pixelmap payloads; keep strings byte-wise)
-      - [ ] Add a dedicated smoke test that diffs a few known fields between LE and BE outputs
+      - [x] All serialized integer fields (resource header, theme header, section headers)
+      - [x] Pixelmap payload words swapped where applicable (32ARGB map words)
+      - [ ] Font payload words swapped where applicable (once font payloads are implemented)
+      - [x] Add a dedicated smoke test that diffs a few known fields between LE and BE outputs
     - [ ] Pixelmap payloads (start small, then broaden)
-      - [ ] Resolve pixelmap source assets from resource XML (paths relative to the project)
-      - [ ] Implement at least one “common path” encoding end-to-end (e.g. 32ARGB uncompressed)
-      - [ ] Emit `GX_PIXELMAP_HEADER` with correct `map_size/aux_data_size` and non-zero offsets
-      - [ ] Emit map/aux blocks with correct alignment and `--big_endian` behavior
+      - [x] Resolve pixelmap source assets from resource XML (paths relative to the project)
+      - [x] Implement at least one “common path” encoding end-to-end (e.g. 32ARGB uncompressed)
+      - [x] Emit `GX_PIXELMAP_HEADER` with correct `map_size/aux_data_size/data_size/width/height/flags`
+      - [x] Emit non-zero offsets (`data_offset`) as Studio does
+      - [x] Emit map block with correct alignment and `--big_endian` behavior (aux-data pending)
       - [ ] Expand format coverage only as fixtures require it (paletted, compressed, alpha, etc.)
-      - [ ] Add smoke assertions for non-zero sizes + correct data placement
+      - [x] Add smoke assertions for non-zero sizes + correct data placement
     - [ ] Font payloads (start small, then broaden)
       - [ ] Resolve font sources referenced by the project (TTF/OTF and any Studio options)
       - [ ] Emit full `GX_FONT_HEADER` + glyph/page tables as Studio does
@@ -165,10 +168,10 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
     - [ ] Strings parity (tighten to Studio)
       - [ ] Confirm language ordering + padding rules and exact encoding/terminators
       - [ ] Confirm `--no_res_header` impacts offsets exactly as Studio does
-      - [ ] Add one “byte-level” assertion that catches regressions (e.g. known string bytes at a known offset)
+      - [x] Add one “byte-level” assertion that catches regressions (e.g. known string bytes at a known offset)
     - [ ] Error handling + diagnostics parity
-      - [ ] Missing assets should fail with actionable, path-specific errors
-      - [ ] Keep behavior consistent between `.gxp` and `-x/--xml` flows
+      - [x] Missing assets should fail with actionable, path-specific errors
+      - [x] Keep behavior consistent between `.gxp` and `-x/--xml` flows (CTest: `guix_studio_cli_generate_binary_missing_pixelmap_asset_xml_demo_guix_binres`)
   - [ ] Verify outputs match Studio for sample projects under `samples/` and `tutorials/`
     - [ ] Decide comparison strategy for `.bin` (golden binary files vs parsed JSON + checksums)
     - [ ] Add at least one CI test that proves “CLI binres == Studio binres” for a fixture

@@ -14,6 +14,9 @@ CTestTestfile.cmake
 # Local build dir used by CLI golden/CI simulations
 /build/guix_studio_cli_ci/
 
+# Local build outputs (should never be committed)
+/build/
+
 /guix_studio/build/vs_2022/.vs/studiox
 /guix_studio/build/vs_2022/Debug
 /guix_studio/build/vs_2022/Release

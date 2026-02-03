@@ -37,6 +37,36 @@ if(NOT EXISTS "${bin}")
   message(FATAL_ERROR "Expected binary output not created: ${bin}")
 endif()
 
+# Use the CLI's binres inspector to locate section offsets.
+execute_process(
+  COMMAND "${GUIX_STUDIO_CLI}" binres-inspect --input "${bin}" --json
+  RESULT_VARIABLE rv_ins
+  OUTPUT_VARIABLE out_ins
+  ERROR_VARIABLE err_ins
+)
+
+if(NOT rv_ins EQUAL 0)
+  message(FATAL_ERROR "binres-inspect failed (rv=${rv_ins})\nstdout:\n${out_ins}\nstderr:\n${err_ins}\n")
+endif()
+
+string(REGEX MATCH "\"theme_offsets\":\\[([0-9]+)\\]" m_theme_offsets "${out_ins}")
+if(NOT m_theme_offsets)
+  message(FATAL_ERROR "Unable to find theme_offsets in binres-inspect JSON:\n${out_ins}")
+endif()
+set(theme0_off ${CMAKE_MATCH_1})
+
+string(REGEX MATCH "\"pixelmap_section_offsets\":\\[([0-9]+)\\]" m_px_offsets "${out_ins}")
+if(NOT m_px_offsets)
+  message(FATAL_ERROR "Unable to find pixelmap_section_offsets in binres-inspect JSON:\n${out_ins}")
+endif()
+set(pixelmap0_off ${CMAKE_MATCH_1})
+
+string(REGEX MATCH "\"string_header_offset\":([0-9]+)" m_str_off "${out_ins}")
+if(NOT m_str_off)
+  message(FATAL_ERROR "Unable to find string_header_offset in binres-inspect JSON:\n${out_ins}")
+endif()
+set(string_hdr_off_ins ${CMAKE_MATCH_1})
+
 # Check magic at start of file: GX_MAGIC_NUMBER (0x4758) stored little-endian => bytes 0x58 0x47.
 file(READ "${bin}" hdr_hex HEX OFFSET 0 LIMIT 2)
 string(TOUPPER "${hdr_hex}" hdr_hex)
@@ -86,11 +116,26 @@ function(read_u8 out_var offset)
   set(${out_var} ${val} PARENT_SCOPE)
 endfunction()
 
+function(read_u32_be_file path out_var offset)
+  file(READ "${path}" tmp_hex HEX OFFSET ${offset} LIMIT 4)
+  string(TOUPPER "${tmp_hex}" tmp_hex)
+  string(SUBSTRING "${tmp_hex}" 0 2 b0)
+  string(SUBSTRING "${tmp_hex}" 2 2 b1)
+  string(SUBSTRING "${tmp_hex}" 4 2 b2)
+  string(SUBSTRING "${tmp_hex}" 6 2 b3)
+  set(val_hex "${b0}${b1}${b2}${b3}")
+  math(EXPR val "0x${val_hex}")
+  set(${out_var} ${val} PARENT_SCOPE)
+endfunction()
+
 set(RES_HDR_SIZE 20)
+
+if(NOT theme0_off EQUAL ${RES_HDR_SIZE})
+  message(FATAL_ERROR "Unexpected theme0 offset from binres-inspect. Expected ${RES_HDR_SIZE}, got ${theme0_off}")
+endif()
 
 # Validate scrollbar appearance/styles are populated from the fixture .gxp.
 # Theme header starts immediately after GX_RESOURCE_HEADER.
-set(theme0_off ${RES_HDR_SIZE})
 math(EXPR vscroll_width_off "${theme0_off} + 12")
 read_u16_le(vscroll_width ${vscroll_width_off})
 if(NOT vscroll_width EQUAL 20)
@@ -163,12 +208,10 @@ endif()
 math(EXPR theme0_pixelmap_data_size_off "${theme0_off} + 106")
 read_u32_le(theme0_pixelmap_data_size ${theme0_pixelmap_data_size_off})
 math(EXPR expected_pixelmap_data_size "${theme0_pixelmap_count} * 32")
-if(NOT theme0_pixelmap_data_size EQUAL expected_pixelmap_data_size)
-  message(FATAL_ERROR "Unexpected theme0_pixelmap_data_size. Expected ${expected_pixelmap_data_size}, got ${theme0_pixelmap_data_size}")
+if(theme0_pixelmap_data_size LESS expected_pixelmap_data_size)
+  message(FATAL_ERROR "Unexpected theme0_pixelmap_data_size. Expected >= ${expected_pixelmap_data_size}, got ${theme0_pixelmap_data_size}")
 endif()
 
-# First GX_PIXELMAP_HEADER should appear after GX_THEME_HEADER + color section + font section.
-math(EXPR pixelmap0_off "${theme0_off} + 114 + ${theme0_color_section_size} + ${theme0_font_data_size}")
 read_u16_le(pixelmap0_magic ${pixelmap0_off})
 if(NOT pixelmap0_magic EQUAL 0x4758)
   message(FATAL_ERROR "Unexpected GX_PIXELMAP_HEADER magic: ${pixelmap0_magic}")
@@ -177,6 +220,42 @@ math(EXPR pixelmap0_index_off "${pixelmap0_off} + 2")
 read_u16_le(pixelmap0_index ${pixelmap0_index_off})
 if(NOT pixelmap0_index EQUAL 1)
   message(FATAL_ERROR "Unexpected first pixelmap index. Expected 1, got ${pixelmap0_index}")
+endif()
+
+# Phase-3: verify we emit a real uncompressed 32ARGB payload for the first
+# pixelmap in this fixture (RADIO_ON: graphics/radiobutton_on.png).
+get_filename_component(PROJECT_DIR "${GUIX_PROJECT}" DIRECTORY)
+set(png "${PROJECT_DIR}/graphics/radiobutton_on.png")
+if(EXISTS "${png}")
+  read_u32_be_file("${png}" png_w 16)
+  read_u32_be_file("${png}" png_h 20)
+  if(png_w LESS 1 OR png_h LESS 1)
+    message(FATAL_ERROR "Unexpected PNG dimensions for ${png}: ${png_w}x${png_h}")
+  endif()
+
+  math(EXPR pixelmap0_map_size_off "${pixelmap0_off} + 8")
+  read_u32_le(pixelmap0_map_size ${pixelmap0_map_size_off})
+  math(EXPR expected_map_size "${png_w} * ${png_h} * 4")
+  if(NOT pixelmap0_map_size EQUAL expected_map_size)
+    message(FATAL_ERROR "Unexpected pixelmap0 map_size. Expected ${expected_map_size}, got ${pixelmap0_map_size}")
+  endif()
+
+  math(EXPR pixelmap0_data_size_off "${pixelmap0_off} + 24")
+  read_u32_le(pixelmap0_data_size ${pixelmap0_data_size_off})
+  if(NOT pixelmap0_data_size EQUAL expected_map_size)
+    message(FATAL_ERROR "Unexpected pixelmap0 data_size. Expected ${expected_map_size}, got ${pixelmap0_data_size}")
+  endif()
+
+  math(EXPR pixelmap0_width_off "${pixelmap0_off} + 20")
+  read_u16_le(pixelmap0_width ${pixelmap0_width_off})
+  math(EXPR pixelmap0_height_off "${pixelmap0_off} + 22")
+  read_u16_le(pixelmap0_height ${pixelmap0_height_off})
+  if(NOT pixelmap0_width EQUAL png_w)
+    message(FATAL_ERROR "Unexpected pixelmap0 width. Expected ${png_w}, got ${pixelmap0_width}")
+  endif()
+  if(NOT pixelmap0_height EQUAL png_h)
+    message(FATAL_ERROR "Unexpected pixelmap0 height. Expected ${png_h}, got ${pixelmap0_height}")
+  endif()
 endif()
 
 # Validate scrollbar color IDs are in-range and match expected IDs for this fixture.
@@ -220,7 +299,11 @@ if(NOT hscroll_button_color EQUAL 15)
 endif()
 
 read_u32_le(theme_data_size 8)
-math(EXPR string_hdr_off "${RES_HDR_SIZE} + ${theme_data_size}")
+math(EXPR string_hdr_off_expected "${RES_HDR_SIZE} + ${theme_data_size}")
+if(NOT string_hdr_off_expected EQUAL string_hdr_off_ins)
+  message(FATAL_ERROR "Unexpected string header offset. Expected ${string_hdr_off_expected} from resource header, got ${string_hdr_off_ins} from binres-inspect")
+endif()
+set(string_hdr_off ${string_hdr_off_ins})
 
 read_u16_le(str_magic "${string_hdr_off}")
 math(EXPR string_hdr_off_2 "${string_hdr_off} + 2")

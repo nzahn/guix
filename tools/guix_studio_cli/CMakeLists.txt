@@ -23,9 +23,17 @@ target_compile_features(studio_core PRIVATE cxx_std_17)
 
 add_executable(guix_studio_cli
     src/main.cpp
+  src/third_party/lodepng.cpp
 )
 
 target_compile_features(guix_studio_cli PRIVATE cxx_std_17)
+
+# We only need PNG decoding for binres pixelmap payloads.
+target_compile_definitions(guix_studio_cli PRIVATE
+  LODEPNG_NO_COMPILE_ENCODER
+  LODEPNG_NO_COMPILE_CPP
+  LODEPNG_NO_COMPILE_ANCILLARY_CHUNKS
+)
 
 target_link_libraries(guix_studio_cli PRIVATE studio_core)
 
@@ -323,6 +331,15 @@ if (BUILD_TESTING)
   )
 
   add_test(
+    NAME guix_studio_cli_generate_binary_big_endian_demo_guix_binres_standalone
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/tutorials/demo_guix_binres_standalone/demo_guix_binres_standalone.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_generate_binary_big_endian_demo_guix_binres_standalone
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/generate_binary_big_endian_smoke.cmake
+  )
+
+  add_test(
     NAME guix_studio_cli_generate_binary_no_res_header_demo_guix_binres_standalone
     COMMAND ${CMAKE_COMMAND}
       -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
@@ -349,6 +366,24 @@ if (BUILD_TESTING)
       -DTHEME_NAME=theme_2
       -DEXPECT_THEME_ID=1
       -P ${CMAKE_CURRENT_LIST_DIR}/tests/generate_binary_theme_filter_smoke.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_generate_binary_missing_pixelmap_asset_demo_guix_binres
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/tutorials/demo_guix_binres/demo_guix_binres.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_generate_binary_missing_pixelmap_asset_demo_guix_binres
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/generate_binary_missing_pixelmap_asset_smoke.cmake
+  )
+
+  add_test(
+    NAME guix_studio_cli_generate_binary_missing_pixelmap_asset_xml_demo_guix_binres
+    COMMAND ${CMAKE_COMMAND}
+      -DGUIX_STUDIO_CLI=$<TARGET_FILE:guix_studio_cli>
+      -DGUIX_PROJECT=${GUIX_REPO_ROOT}/tutorials/demo_guix_binres/demo_guix_binres.gxp
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/ctest_out_generate_binary_missing_pixelmap_asset_xml_demo_guix_binres
+      -P ${CMAKE_CURRENT_LIST_DIR}/tests/generate_binary_missing_pixelmap_asset_xml_smoke.cmake
   )
 
   add_test(
