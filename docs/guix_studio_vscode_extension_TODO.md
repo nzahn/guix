@@ -105,13 +105,21 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
 - [x] Validate previews schema migration in-memory (no silent writes)
 
 - [x] Create a new CMake target for a console app: [tools/guix_studio_cli/](tools/guix_studio_cli/)
-- [ ] Refactor Studio code into layers:
-  - [ ] `studio_core` (portable) — project model + XML read/write + generators
-  - [ ] `studio_win` (legacy) — MFC UI that calls `studio_core`
-- [ ] Replace Windows/MFC-only types in core paths:
-  - [ ] `CString` → `std::string` (or a thin adapter)
-  - [ ] `CFile/CStdioFile` → stdio/iostream/fs
-  - [ ] Path handling: use `std::filesystem` and normalize separators
+- [ ] Refactor Studio code into layers (ordered, safe migration)
+  - [ ] Create a `studio_core` library target in CMake (portable)
+  - [ ] Identify the minimal public surface area for `studio_core`
+    - Project model + XML read/write
+    - Resource XML generator
+    - Binres generator
+  - [ ] Introduce narrow portability shims (only where needed)
+    - [ ] Strings: `CString` → `std::string` (or a very thin adapter wrapper)
+    - [ ] Files: `CFile/CStdioFile` → std::ifstream/ofstream (or a small file API)
+    - [ ] Paths: use `std::filesystem` and normalize separators at boundaries
+  - [ ] Move non-UI code from `guix_studio/` into `studio_core` incrementally
+    - Keep `studio_win` (legacy MFC UI) calling into the extracted APIs
+  - [ ] Add tests around extracted behavior before/while moving code
+    - Focus on XML read/write and generator outputs (golden comparisons)
+  - [ ] Only after stable: delete/retire duplicated legacy paths
 - [x] Preserve CLI semantics from `guix_studio/CommandInfo.*`:
   - [x] `-p/--project` `.gxp`
   - [x] `-n/--nogui` (implicit; CLI is always headless)
@@ -131,8 +139,39 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
 - [x] Add export-resource-xml smoke tests for fixture projects
 - [ ] Implement/port resource generation and binary resource generation
   - [x] `generate --binary` emits a minimal, loadable GUIX binres (headers + string table; includes theme color table + scrollbar appearance/styles + a minimal font section (default/system fonts) + a minimal pixelmap section (header-only); smoke tested for multi-language + `--no_res_header`)
-  - [ ] Full Studio-parity binres generation (colors/fonts/pixelmaps/strings; honor `--big_endian`/`--no_res_header`)
+  - [ ] Full Studio-parity binres generation (ordered, incremental)
+    - [ ] Document the binres layout contract we’re targeting (sections, sizes, alignment/padding, loader expectations)
+      - Reference: `common/src/gx_binres_theme_load.c` (reader) and `guix_studio/binary_resource_gen.cpp` (writer)
+    - [ ] Consolidate binres writer helpers (single source of truth)
+      - [ ] `write_u16/write_u32` that honor `--big_endian`
+      - [ ] `pad_to_4` and a single alignment policy used everywhere
+      - [ ] One place that computes offsets/sizes (avoid “recompute in tests” drift)
+    - [ ] Make `--big_endian` real for binres (not just accepted)
+      - [ ] All serialized integer fields (resource header, theme header, section headers)
+      - [ ] All payload words where Studio swaps (fonts and pixelmap payloads; keep strings byte-wise)
+      - [ ] Add a dedicated smoke test that diffs a few known fields between LE and BE outputs
+    - [ ] Pixelmap payloads (start small, then broaden)
+      - [ ] Resolve pixelmap source assets from resource XML (paths relative to the project)
+      - [ ] Implement at least one “common path” encoding end-to-end (e.g. 32ARGB uncompressed)
+      - [ ] Emit `GX_PIXELMAP_HEADER` with correct `map_size/aux_data_size` and non-zero offsets
+      - [ ] Emit map/aux blocks with correct alignment and `--big_endian` behavior
+      - [ ] Expand format coverage only as fixtures require it (paletted, compressed, alpha, etc.)
+      - [ ] Add smoke assertions for non-zero sizes + correct data placement
+    - [ ] Font payloads (start small, then broaden)
+      - [ ] Resolve font sources referenced by the project (TTF/OTF and any Studio options)
+      - [ ] Emit full `GX_FONT_HEADER` + glyph/page tables as Studio does
+      - [ ] Ensure offsets/sizes are correct and aligned; ensure `--big_endian` behavior matches Studio
+      - [ ] Add smoke assertions for non-zero font tables and stable offsets
+    - [ ] Strings parity (tighten to Studio)
+      - [ ] Confirm language ordering + padding rules and exact encoding/terminators
+      - [ ] Confirm `--no_res_header` impacts offsets exactly as Studio does
+      - [ ] Add one “byte-level” assertion that catches regressions (e.g. known string bytes at a known offset)
+    - [ ] Error handling + diagnostics parity
+      - [ ] Missing assets should fail with actionable, path-specific errors
+      - [ ] Keep behavior consistent between `.gxp` and `-x/--xml` flows
   - [ ] Verify outputs match Studio for sample projects under `samples/` and `tutorials/`
+    - [ ] Decide comparison strategy for `.bin` (golden binary files vs parsed JSON + checksums)
+    - [ ] Add at least one CI test that proves “CLI binres == Studio binres” for a fixture
 
 ### M3 — Extension integrates CLI (1–2 weeks)
 - **Goal:** smooth UX around invoking the CLI (discoverability, logs, diagnostics).
