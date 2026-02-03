@@ -43,6 +43,23 @@ struct BinresThemeData {
     uint16_t theme_id = 0;
     std::vector<uint32_t> colors;
 
+    struct FontEntry {
+        uint16_t index = 0;
+        uint8_t bits = 8;
+        // Phase-1: emit system default fonts so binres is loadable without embedding glyph data.
+        bool is_default = true;
+    };
+
+    std::vector<FontEntry> fonts;
+
+    struct PixelmapEntry {
+        // GUIX binres pixelmap IDs start at 1; index 0 is reserved.
+        uint16_t index = 1;
+        uint8_t format = 22; // GX_COLOR_FORMAT_32ARGB
+    };
+
+    std::vector<PixelmapEntry> pixelmaps;
+
     struct ScrollbarAppearance {
         uint16_t scroll_width = 0;
         uint16_t thumb_width = 0;
@@ -119,6 +136,8 @@ static bool write_binres_with_strings(
     };
 
     const uint32_t GX_COLOR_HEADER_SIZE = 8;
+    const uint32_t GX_FONT_HEADER_SIZE = 16;
+    const uint32_t GX_PIXELMAP_HEADER_SIZE = 32;
 
     auto calc_theme_data_size = [&](const BinresThemeData& theme) -> uint32_t {
         uint32_t total = 0;
@@ -130,7 +149,17 @@ static bool write_binres_with_strings(
             total += static_cast<uint32_t>(theme.colors.size()) * 4U;
         }
 
-        // Future: palettes, fonts, pixelmaps.
+        // Font section (Phase-1): a sequence of GX_FONT_HEADER records.
+        if (!theme.fonts.empty()) {
+            total += static_cast<uint32_t>(theme.fonts.size()) * GX_FONT_HEADER_SIZE;
+        }
+
+        // Pixelmap section (Phase-1): a sequence of GX_PIXELMAP_HEADER records.
+        if (!theme.pixelmaps.empty()) {
+            total += static_cast<uint32_t>(theme.pixelmaps.size()) * GX_PIXELMAP_HEADER_SIZE;
+        }
+
+        // Future: palettes and embedded font/pixelmap data.
         return total;
     };
 
@@ -173,8 +202,8 @@ static bool write_binres_with_strings(
         write_u16_le(os, theme.theme_id);
         write_u16_le(os, color_count);
         write_u16_le(os, 0); // palette count
-        write_u16_le(os, 0); // font count
-        write_u16_le(os, 0); // pixelmap count
+        write_u16_le(os, static_cast<uint16_t>(std::min<size_t>(theme.fonts.size(), 0xFFFF))); // font count
+        write_u16_le(os, static_cast<uint16_t>(std::min<size_t>(theme.pixelmaps.size(), 0xFFFF))); // pixelmap count
 
         // vscroll appearance
         write_u16_le(os, theme.vscroll.scroll_width);
@@ -209,8 +238,8 @@ static bool write_binres_with_strings(
 
         write_u32_le(os, color_data_size);
         write_u32_le(os, 0); // palette data size
-        write_u32_le(os, 0); // font data size
-        write_u32_le(os, 0); // pixelmap data size
+        write_u32_le(os, static_cast<uint32_t>(std::min<size_t>(theme.fonts.size(), 0xFFFF)) * GX_FONT_HEADER_SIZE);
+        write_u32_le(os, static_cast<uint32_t>(std::min<size_t>(theme.pixelmaps.size(), 0xFFFF)) * GX_PIXELMAP_HEADER_SIZE);
         write_u32_le(os, theme_total_data_size);
     };
 
@@ -233,6 +262,60 @@ static bool write_binres_with_strings(
         }
     };
 
+    auto write_font_section = [&](const BinresThemeData& theme) {
+        if (theme.fonts.empty()) {
+            return;
+        }
+
+        // GX_FONT_HEADER layout per `common/src/gx_binres_theme_load.c`:
+        //   USHORT magic
+        //   USHORT index
+        //   USHORT page_count
+        //   GX_UBYTE default
+        //   GX_UBYTE bits
+        //   ULONG data_size
+        //   ULONG data_offset
+        for (const auto& fe : theme.fonts) {
+            write_u16_le(os, GX_MAGIC_NUMBER);
+            write_u16_le(os, fe.index);
+            write_u16_le(os, 0); // page_count
+            write_u8(os, static_cast<uint8_t>(fe.is_default ? 1 : 0));
+
+            uint8_t bits = fe.bits;
+            if (!(bits == 1 || bits == 4 || bits == 8)) {
+                bits = 8;
+            }
+            write_u8(os, bits);
+
+            write_u32_le(os, 0); // data_size
+            write_u32_le(os, 0); // data_offset
+        }
+    };
+
+    auto write_pixelmap_section = [&](const BinresThemeData& theme) {
+        if (theme.pixelmaps.empty()) {
+            return;
+        }
+
+        // GX_PIXELMAP_HEADER layout per `common/src/gx_binres_theme_load.c`.
+        // Phase-1: write header-only pixelmaps (no embedded data).
+        for (const auto& pm : theme.pixelmaps) {
+            write_u16_le(os, GX_MAGIC_NUMBER);
+            write_u16_le(os, pm.index);
+            write_u8(os, 0); // version_major
+            write_u8(os, 0); // version_minor
+            write_u8(os, 0); // flags
+            write_u8(os, pm.format);
+            write_u32_le(os, 0); // map_size
+            write_u32_le(os, 0); // aux_data_size
+            write_u32_le(os, 0); // transparent_color
+            write_u16_le(os, 1); // width
+            write_u16_le(os, 1); // height
+            write_u32_le(os, 0); // data_size
+            write_u32_le(os, 0); // data_offset
+        }
+    };
+
     // Themes are serialized as:
     //   GX_THEME_HEADER
     //   [color section]
@@ -247,10 +330,14 @@ static bool write_binres_with_strings(
         for (const auto& theme : themes) {
             const uint16_t color_count = static_cast<uint16_t>(std::min<size_t>(theme.colors.size(), 0xFFFF));
             const uint32_t color_section_size = theme.colors.empty() ? 0U : (GX_COLOR_HEADER_SIZE + static_cast<uint32_t>(color_count) * 4U);
-            const uint32_t theme_total_data_size = color_section_size; // palette/font/pixelmap not yet included
+            const uint32_t font_section_size = static_cast<uint32_t>(std::min<size_t>(theme.fonts.size(), 0xFFFF)) * GX_FONT_HEADER_SIZE;
+            const uint32_t pixelmap_section_size = static_cast<uint32_t>(std::min<size_t>(theme.pixelmaps.size(), 0xFFFF)) * GX_PIXELMAP_HEADER_SIZE;
+            const uint32_t theme_total_data_size = color_section_size + font_section_size + pixelmap_section_size; // palette not yet included
 
             write_theme_header(theme, color_count, color_section_size, theme_total_data_size);
             write_color_section(theme);
+            write_font_section(theme);
+            write_pixelmap_section(theme);
         }
     }
 
@@ -1448,6 +1535,12 @@ int cmd_generate(const std::vector<std::string>& args) {
                         std::string name;
                         std::vector<uint32_t> colors;
 
+                        // Per-theme font resources (ordered). Phase-1 emits these as default system fonts.
+                        std::vector<uint8_t> font_bits;
+
+                        // Per-theme pixelmap resources (ordered). Phase-1 emits these as header-only pixelmaps.
+                        size_t pixelmap_count = 0;
+
                         BinresThemeData::ScrollbarAppearance vscroll;
                         BinresThemeData::ScrollbarAppearance hscroll;
                         uint32_t vscroll_style = 0;
@@ -1574,7 +1667,7 @@ int cmd_generate(const std::vector<std::string>& args) {
                             }
 
                             if (c.name == "theme_data" && current) {
-                                // Recursively collect <resource> nodes with <type>COLOR</type>.
+                                // Recursively collect <resource> nodes with <type>COLOR</type>, <type>FONT</type>, and <type>PIXELMAP</type>.
                                 std::function<void(const studio_core::XmlNode&)> walk;
                                 walk = [&](const studio_core::XmlNode& n) {
                                     if (n.name == "resource") {
@@ -1607,6 +1700,40 @@ int cmd_generate(const std::vector<std::string>& args) {
                                                 }
                                             }
                                         }
+                                        if (t && t->text == "FONT") {
+                                            const auto* enabled = n.firstChild("enabled");
+                                            if (enabled && !enabled->text.empty()) {
+                                                std::string e = enabled->text;
+                                                std::transform(e.begin(), e.end(), e.begin(), [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+                                                if (e != "TRUE") {
+                                                    // skip disabled fonts
+                                                    return;
+                                                }
+                                            }
+
+                                            uint8_t bits = 8;
+                                            if (const auto* fb = n.firstChild("font_bits")) {
+                                                uint32_t tmp = 0;
+                                                if (try_parse_u32(fb->text, &tmp) && tmp <= 0xFF) {
+                                                    bits = static_cast<uint8_t>(tmp);
+                                                }
+                                            }
+                                            current->font_bits.push_back(bits);
+                                        }
+
+                                        if (t && t->text == "PIXELMAP") {
+                                            const auto* enabled = n.firstChild("enabled");
+                                            if (enabled && !enabled->text.empty()) {
+                                                std::string e = enabled->text;
+                                                std::transform(e.begin(), e.end(), e.begin(), [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+                                                if (e != "TRUE") {
+                                                    // skip disabled pixelmaps
+                                                    return;
+                                                }
+                                            }
+
+                                            current->pixelmap_count++;
+                                        }
                                     } else if (n.name == "vscroll_appearance" && current) {
                                         parse_scroll_appearance(n, *current, true);
                                     } else if (n.name == "hscroll_appearance" && current) {
@@ -1637,6 +1764,24 @@ int cmd_generate(const std::vector<std::string>& args) {
                                 BinresThemeData td;
                                 td.theme_id = static_cast<uint16_t>(i);
                                 td.colors = known_themes[i].colors;
+
+                                td.fonts.reserve(known_themes[i].font_bits.size());
+                                for (size_t fi = 0; fi < known_themes[i].font_bits.size(); ++fi) {
+                                    BinresThemeData::FontEntry fe;
+                                    fe.index = static_cast<uint16_t>(fi);
+                                    fe.bits = known_themes[i].font_bits[fi];
+                                    fe.is_default = true; // Phase-1: keep binres loadable without embedding glyph data.
+                                    td.fonts.push_back(fe);
+                                }
+
+                                td.pixelmaps.reserve(known_themes[i].pixelmap_count);
+                                for (size_t pi = 0; pi < known_themes[i].pixelmap_count; ++pi) {
+                                    BinresThemeData::PixelmapEntry pm;
+                                    pm.index = static_cast<uint16_t>(pi + 1); // pixelmap IDs start at 1
+                                    pm.format = 22; // GX_COLOR_FORMAT_32ARGB
+                                    td.pixelmaps.push_back(pm);
+                                }
+
                                 td.vscroll = known_themes[i].vscroll;
                                 td.hscroll = known_themes[i].hscroll;
                                 td.vscroll_style = known_themes[i].vscroll_style;
