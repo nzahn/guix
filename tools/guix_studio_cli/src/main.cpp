@@ -9,6 +9,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 static void write_u16_le(std::ostream& os, uint16_t v) {
@@ -41,6 +42,27 @@ struct BinresStringTable {
 struct BinresThemeData {
     uint16_t theme_id = 0;
     std::vector<uint32_t> colors;
+
+    struct ScrollbarAppearance {
+        uint16_t scroll_width = 0;
+        uint16_t thumb_width = 0;
+        uint16_t thumb_travel_min = 0;
+        uint16_t thumb_travel_max = 0;
+        uint8_t thumb_border_style = 0;
+
+        uint32_t scroll_fill_pixelmap = 0;
+        uint32_t scroll_thumb_pixelmap = 0;
+        uint32_t scroll_up_pixelmap = 0;
+        uint32_t scroll_down_pixelmap = 0;
+        uint32_t scroll_thumb_color = 0;
+        uint32_t scroll_thumb_border_color = 0;
+        uint32_t scroll_button_color = 0;
+    };
+
+    ScrollbarAppearance vscroll;
+    ScrollbarAppearance hscroll;
+    uint32_t vscroll_style = 0;
+    uint32_t hscroll_style = 0;
 };
 
 static bool write_binres_with_strings(
@@ -145,37 +167,45 @@ static bool write_binres_with_strings(
         write_u32_le(os, data_size);
     }
 
-    auto write_theme_header = [&](uint16_t theme_id, uint16_t color_count, uint32_t color_data_size, uint32_t theme_total_data_size) {
+    auto write_theme_header = [&](const BinresThemeData& theme, uint16_t color_count, uint32_t color_data_size, uint32_t theme_total_data_size) {
         // Layout must match reads in `common/src/gx_binres_theme_load.c`.
         write_u16_le(os, GX_MAGIC_NUMBER);
-        write_u16_le(os, theme_id);
+        write_u16_le(os, theme.theme_id);
         write_u16_le(os, color_count);
         write_u16_le(os, 0); // palette count
         write_u16_le(os, 0); // font count
         write_u16_le(os, 0); // pixelmap count
 
         // vscroll appearance
-        write_u16_le(os, 0);
-        write_u16_le(os, 0);
-        write_u16_le(os, 0);
-        write_u16_le(os, 0);
-        write_u8(os, 0);
-        for (int i = 0; i < 7; ++i) {
-            write_u32_le(os, 0);
-        }
+        write_u16_le(os, theme.vscroll.scroll_width);
+        write_u16_le(os, theme.vscroll.thumb_width);
+        write_u16_le(os, theme.vscroll.thumb_travel_min);
+        write_u16_le(os, theme.vscroll.thumb_travel_max);
+        write_u8(os, theme.vscroll.thumb_border_style);
+        write_u32_le(os, theme.vscroll.scroll_fill_pixelmap);
+        write_u32_le(os, theme.vscroll.scroll_thumb_pixelmap);
+        write_u32_le(os, theme.vscroll.scroll_up_pixelmap);
+        write_u32_le(os, theme.vscroll.scroll_down_pixelmap);
+        write_u32_le(os, theme.vscroll.scroll_thumb_color);
+        write_u32_le(os, theme.vscroll.scroll_thumb_border_color);
+        write_u32_le(os, theme.vscroll.scroll_button_color);
 
         // hscroll appearance
-        write_u16_le(os, 0);
-        write_u16_le(os, 0);
-        write_u16_le(os, 0);
-        write_u16_le(os, 0);
-        write_u8(os, 0);
-        for (int i = 0; i < 7; ++i) {
-            write_u32_le(os, 0);
-        }
+        write_u16_le(os, theme.hscroll.scroll_width);
+        write_u16_le(os, theme.hscroll.thumb_width);
+        write_u16_le(os, theme.hscroll.thumb_travel_min);
+        write_u16_le(os, theme.hscroll.thumb_travel_max);
+        write_u8(os, theme.hscroll.thumb_border_style);
+        write_u32_le(os, theme.hscroll.scroll_fill_pixelmap);
+        write_u32_le(os, theme.hscroll.scroll_thumb_pixelmap);
+        write_u32_le(os, theme.hscroll.scroll_up_pixelmap);
+        write_u32_le(os, theme.hscroll.scroll_down_pixelmap);
+        write_u32_le(os, theme.hscroll.scroll_thumb_color);
+        write_u32_le(os, theme.hscroll.scroll_thumb_border_color);
+        write_u32_le(os, theme.hscroll.scroll_button_color);
 
-        write_u32_le(os, 0); // vscroll style
-        write_u32_le(os, 0); // hscroll style
+        write_u32_le(os, theme.vscroll_style);
+        write_u32_le(os, theme.hscroll_style);
 
         write_u32_le(os, color_data_size);
         write_u32_le(os, 0); // palette data size
@@ -212,14 +242,14 @@ static bool write_binres_with_strings(
     // repeated per theme.
     if (themes.empty()) {
         // Minimal single theme.
-        write_theme_header(0, 0, 0, 0);
+        write_theme_header(BinresThemeData{}, 0, 0, 0);
     } else {
         for (const auto& theme : themes) {
             const uint16_t color_count = static_cast<uint16_t>(std::min<size_t>(theme.colors.size(), 0xFFFF));
             const uint32_t color_section_size = theme.colors.empty() ? 0U : (GX_COLOR_HEADER_SIZE + static_cast<uint32_t>(color_count) * 4U);
             const uint32_t theme_total_data_size = color_section_size; // palette/font/pixelmap not yet included
 
-            write_theme_header(theme.theme_id, color_count, color_section_size, theme_total_data_size);
+            write_theme_header(theme, color_count, color_section_size, theme_total_data_size);
             write_color_section(theme);
         }
     }
@@ -1417,6 +1447,118 @@ int cmd_generate(const std::vector<std::string>& args) {
                     struct ParsedTheme {
                         std::string name;
                         std::vector<uint32_t> colors;
+
+                        BinresThemeData::ScrollbarAppearance vscroll;
+                        BinresThemeData::ScrollbarAppearance hscroll;
+                        uint32_t vscroll_style = 0;
+                        uint32_t hscroll_style = 0;
+
+                        std::unordered_map<std::string, uint32_t> color_id_by_name;
+                    };
+
+                    auto normalize_id = [](std::string s) -> std::string {
+                        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char ch) {
+                            return static_cast<char>(std::toupper(ch));
+                        });
+                        return s;
+                    };
+
+                    auto try_parse_u32 = [](const std::string& s, uint32_t* out) -> bool {
+                        if (s.empty()) return false;
+                        try {
+                            size_t idx = 0;
+                            const uint32_t v = static_cast<uint32_t>(std::stoul(s, &idx, 0));
+                            if (idx != s.size()) return false;
+                            *out = v;
+                            return true;
+                        } catch (...) {
+                            return false;
+                        }
+                    };
+
+                    auto try_parse_u16 = [&](const std::string& s, uint16_t* out) -> bool {
+                        uint32_t tmp = 0;
+                        if (!try_parse_u32(s, &tmp) || tmp > 0xFFFF) return false;
+                        *out = static_cast<uint16_t>(tmp);
+                        return true;
+                    };
+
+                    auto try_parse_u8 = [&](const std::string& s, uint8_t* out) -> bool {
+                        uint32_t tmp = 0;
+                        if (!try_parse_u32(s, &tmp) || tmp > 0xFF) return false;
+                        *out = static_cast<uint8_t>(tmp);
+                        return true;
+                    };
+
+                    auto resolve_color_id = [&](const ParsedTheme& theme, const std::string& maybe_name) -> uint32_t {
+                        if (maybe_name.empty()) return 0;
+                        uint32_t v = 0;
+                        if (try_parse_u32(maybe_name, &v)) return v;
+                        std::string key = normalize_id(maybe_name);
+                        const std::string prefix = "GX_COLOR_ID_";
+                        if (key.rfind(prefix, 0) == 0) {
+                            key = key.substr(prefix.size());
+                        }
+                        const auto it = theme.color_id_by_name.find(key);
+                        if (it != theme.color_id_by_name.end()) return it->second;
+                        return 0;
+                    };
+
+                    auto parse_scroll_appearance = [&](const studio_core::XmlNode& node,
+                                                      ParsedTheme& theme,
+                                                      bool is_vertical) {
+                        BinresThemeData::ScrollbarAppearance& a = is_vertical ? theme.vscroll : theme.hscroll;
+
+                        if (const auto* n = node.firstChild("scroll_width")) {
+                            (void)try_parse_u16(n->text, &a.scroll_width);
+                        }
+                        if (const auto* n = node.firstChild("thumb_width")) {
+                            (void)try_parse_u16(n->text, &a.thumb_width);
+                        }
+                        if (const auto* n = node.firstChild("thumb_travel_min")) {
+                            (void)try_parse_u16(n->text, &a.thumb_travel_min);
+                        }
+                        if (const auto* n = node.firstChild("thumb_travel_max")) {
+                            (void)try_parse_u16(n->text, &a.thumb_travel_max);
+                        }
+                        if (const auto* n = node.firstChild("thumb_border_style")) {
+                            (void)try_parse_u8(n->text, &a.thumb_border_style);
+                        }
+
+                        // Pixelmap IDs: leave as 0 for now unless specified numerically.
+                        if (const auto* n = node.firstChild("scroll_fill_pixelmap")) {
+                            (void)try_parse_u32(n->text, &a.scroll_fill_pixelmap);
+                        }
+                        if (const auto* n = node.firstChild("scroll_thumb_pixelmap")) {
+                            (void)try_parse_u32(n->text, &a.scroll_thumb_pixelmap);
+                        }
+                        if (const auto* n = node.firstChild("scroll_up_pixelmap")) {
+                            (void)try_parse_u32(n->text, &a.scroll_up_pixelmap);
+                        }
+                        if (const auto* n = node.firstChild("scroll_down_pixelmap")) {
+                            (void)try_parse_u32(n->text, &a.scroll_down_pixelmap);
+                        }
+
+                        if (const auto* n = node.firstChild("scroll_thumb_color")) {
+                            a.scroll_thumb_color = resolve_color_id(theme, n->text);
+                        }
+                        if (const auto* n = node.firstChild("scroll_thumb_border_color")) {
+                            a.scroll_thumb_border_color = resolve_color_id(theme, n->text);
+                        }
+                        if (const auto* n = node.firstChild("scroll_button_color")) {
+                            a.scroll_button_color = resolve_color_id(theme, n->text);
+                        }
+
+                        if (const auto* n = node.firstChild("scroll_style")) {
+                            uint32_t style = 0;
+                            if (try_parse_u32(n->text, &style)) {
+                                if (is_vertical) {
+                                    theme.vscroll_style = style;
+                                } else {
+                                    theme.hscroll_style = style;
+                                }
+                            }
+                        }
                     };
 
                     std::vector<ParsedTheme> known_themes;
@@ -1424,7 +1566,9 @@ int cmd_generate(const std::vector<std::string>& args) {
                         ParsedTheme* current = nullptr;
                         for (const auto& c : ti->children) {
                             if (c.name == "theme_name" && !c.text.empty()) {
-                                known_themes.push_back({c.text, {}});
+                                ParsedTheme t;
+                                t.name = c.text;
+                                known_themes.push_back(std::move(t));
                                 current = &known_themes.back();
                                 continue;
                             }
@@ -1450,10 +1594,23 @@ int cmd_generate(const std::vector<std::string>& args) {
                                                 try {
                                                     const uint32_t v = static_cast<uint32_t>(std::stoul(cv->text));
                                                     current->colors.push_back(v);
+
+                                                    if (const auto* nm = n.firstChild("name")) {
+                                                        if (!nm->text.empty()) {
+                                                            const std::string key = normalize_id(nm->text);
+                                                            // Resource IDs are table indices.
+                                                            const uint32_t color_id = static_cast<uint32_t>(current->colors.size() - 1);
+                                                            current->color_id_by_name.emplace(key, color_id);
+                                                        }
+                                                    }
                                                 } catch (...) {
                                                 }
                                             }
                                         }
+                                    } else if (n.name == "vscroll_appearance" && current) {
+                                        parse_scroll_appearance(n, *current, true);
+                                    } else if (n.name == "hscroll_appearance" && current) {
+                                        parse_scroll_appearance(n, *current, false);
                                     }
                                     for (const auto& ch : n.children) {
                                         walk(ch);
@@ -1480,6 +1637,10 @@ int cmd_generate(const std::vector<std::string>& args) {
                                 BinresThemeData td;
                                 td.theme_id = static_cast<uint16_t>(i);
                                 td.colors = known_themes[i].colors;
+                                td.vscroll = known_themes[i].vscroll;
+                                td.hscroll = known_themes[i].hscroll;
+                                td.vscroll_style = known_themes[i].vscroll_style;
+                                td.hscroll_style = known_themes[i].hscroll_style;
                                 themes.push_back(std::move(td));
                                 break;
                             }

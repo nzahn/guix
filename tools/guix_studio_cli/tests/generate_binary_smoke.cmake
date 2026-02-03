@@ -80,6 +80,34 @@ function(read_u32_le out_var offset)
 endfunction()
 
 set(RES_HDR_SIZE 20)
+
+# Validate scrollbar appearance/styles are populated from the fixture .gxp.
+# Theme header starts immediately after GX_RESOURCE_HEADER.
+set(theme0_off ${RES_HDR_SIZE})
+math(EXPR vscroll_width_off "${theme0_off} + 12")
+read_u16_le(vscroll_width ${vscroll_width_off})
+if(NOT vscroll_width EQUAL 20)
+  message(FATAL_ERROR "Unexpected vscroll width. Expected 20, got ${vscroll_width}")
+endif()
+
+math(EXPR hscroll_width_off "${theme0_off} + 49")
+read_u16_le(hscroll_width ${hscroll_width_off})
+if(NOT hscroll_width EQUAL 20)
+  message(FATAL_ERROR "Unexpected hscroll width. Expected 20, got ${hscroll_width}")
+endif()
+
+math(EXPR vscroll_style_off "${theme0_off} + 86")
+read_u32_le(vscroll_style ${vscroll_style_off})
+if(NOT vscroll_style EQUAL 17170432)
+  message(FATAL_ERROR "Unexpected vscroll style. Expected 17170432, got ${vscroll_style}")
+endif()
+
+math(EXPR hscroll_style_off "${theme0_off} + 90")
+read_u32_le(hscroll_style ${hscroll_style_off})
+if(NOT hscroll_style EQUAL 33947648)
+  message(FATAL_ERROR "Unexpected hscroll style. Expected 33947648, got ${hscroll_style}")
+endif()
+
 read_u32_le(theme_data_size 8)
 math(EXPR string_hdr_off "${RES_HDR_SIZE} + ${theme_data_size}")
 

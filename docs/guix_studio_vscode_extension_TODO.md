@@ -130,7 +130,7 @@ Open older `.gxp` versions by migrating them in-memory to the latest schema, whi
   - [x] Add “save as latest” option (explicit, not silent)
 - [x] Add export-resource-xml smoke tests for fixture projects
 - [ ] Implement/port resource generation and binary resource generation
-  - [x] `generate --binary` emits a minimal, loadable GUIX binres (headers + string table; includes theme color table; smoke tested for multi-language + `--no_res_header`)
+  - [x] `generate --binary` emits a minimal, loadable GUIX binres (headers + string table; includes theme color table + scrollbar appearance/styles; smoke tested for multi-language + `--no_res_header`)
   - [ ] Full Studio-parity binres generation (colors/fonts/pixelmaps/strings; honor `--big_endian`/`--no_res_header`)
   - [ ] Verify outputs match Studio for sample projects under `samples/` and `tutorials/`
 

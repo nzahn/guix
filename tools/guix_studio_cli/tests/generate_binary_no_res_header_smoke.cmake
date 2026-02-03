@@ -75,6 +75,29 @@ endfunction()
 #   string entries...
 set(THEME_HDR_SIZE 114)
 
+# Validate we populate scrollbar appearance/styles from the fixture .gxp.
+# Offsets per `common/src/gx_binres_theme_load.c` read order.
+read_u16_le(vscroll_width 12)
+if(NOT vscroll_width EQUAL 20)
+  message(FATAL_ERROR "Unexpected vscroll width. Expected 20, got ${vscroll_width}")
+endif()
+
+read_u16_le(hscroll_width 49)
+if(NOT hscroll_width EQUAL 20)
+  message(FATAL_ERROR "Unexpected hscroll width. Expected 20, got ${hscroll_width}")
+endif()
+
+# vscroll_style and hscroll_style are ULONGs at offsets 86 and 90.
+read_u32_le(vscroll_style 86)
+if(NOT vscroll_style EQUAL 17170432)
+  message(FATAL_ERROR "Unexpected vscroll style. Expected 17170432, got ${vscroll_style}")
+endif()
+
+read_u32_le(hscroll_style 90)
+if(NOT hscroll_style EQUAL 33947648)
+  message(FATAL_ERROR "Unexpected hscroll style. Expected 33947648, got ${hscroll_style}")
+endif()
+
 # Validate theme header indicates a non-empty color table and that GX_COLOR_HEADER is present.
 read_u16_le(theme0_color_count 4)
 if(theme0_color_count LESS 1)

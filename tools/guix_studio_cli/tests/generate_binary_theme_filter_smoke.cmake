@@ -89,6 +89,32 @@ if(NOT theme0_index EQUAL EXPECT_THEME_ID)
   message(FATAL_ERROR "Unexpected theme index. Expected ${EXPECT_THEME_ID}, got ${theme0_index}")
 endif()
 
+# Validate scrollbar appearance/styles are populated from the fixture .gxp.
+# Offsets per `common/src/gx_binres_theme_load.c` read order.
+math(EXPR vscroll_width_off "${theme0_off} + 12")
+read_u16_le(vscroll_width ${vscroll_width_off})
+if(NOT vscroll_width EQUAL 20)
+  message(FATAL_ERROR "Unexpected vscroll width. Expected 20, got ${vscroll_width}")
+endif()
+
+math(EXPR hscroll_width_off "${theme0_off} + 49")
+read_u16_le(hscroll_width ${hscroll_width_off})
+if(NOT hscroll_width EQUAL 20)
+  message(FATAL_ERROR "Unexpected hscroll width. Expected 20, got ${hscroll_width}")
+endif()
+
+math(EXPR vscroll_style_off "${theme0_off} + 86")
+read_u32_le(vscroll_style ${vscroll_style_off})
+if(NOT vscroll_style EQUAL 17170432)
+  message(FATAL_ERROR "Unexpected vscroll style. Expected 17170432, got ${vscroll_style}")
+endif()
+
+math(EXPR hscroll_style_off "${theme0_off} + 90")
+read_u32_le(hscroll_style ${hscroll_style_off})
+if(NOT hscroll_style EQUAL 33947648)
+  message(FATAL_ERROR "Unexpected hscroll style. Expected 33947648, got ${hscroll_style}")
+endif()
+
 # Validate that theme 0 has a non-empty color table and color header.
 math(EXPR theme0_color_count_off "${theme0_off} + 4")
 read_u16_le(theme0_color_count ${theme0_color_count_off})
