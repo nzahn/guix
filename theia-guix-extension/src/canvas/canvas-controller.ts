@@ -24,6 +24,7 @@ import {
     cursorForDragMode,
     SELECT_HANDLE_SIZE,
 } from './selection-manager';
+import { drawWidget as drawWidgetByType } from './widget-renderer';
 import type { GxRectangle, WidgetInfo, FolderInfo } from '../common/widget-info';
 import type { DisplayInfo } from '../common/project-model';
 import {
@@ -98,17 +99,6 @@ function collectWidgets(folders: FolderInfo[]): WidgetInfo[] {
         for (const w of f.widgets) walk(w);
     }
     return result;
-}
-
-/** Approximate widget fill colour based on widget type (design-time palette). */
-function widgetFillColor(basetype: number): string {
-    // Grouped by type category for visual distinction
-    if (basetype >= 128) return '#3a6cae'; // windows/containers — blue
-    if (basetype >= 64)  return '#7a4ea0'; // text inputs — purple
-    if (basetype >= 30)  return '#2e8b57'; // prompts — green
-    if (basetype >= 20)  return '#a06020'; // sliders/scrolls — orange
-    if (basetype >= 2)   return '#8b2020'; // buttons — red
-    return '#444';
 }
 
 // ---------------------------------------------------------------------------
@@ -304,33 +294,9 @@ export class CanvasController {
         const sw = br.x - tl.x;
         const sh = br.y - tl.y;
 
-        ctx.save();
+        drawWidgetByType(ctx, tl.x, tl.y, sw, sh, w);
 
-        // Fill
-        ctx.fillStyle = widgetFillColor(w.basetype);
-        ctx.globalAlpha = 0.6;
-        ctx.fillRect(tl.x, tl.y, sw, sh);
-
-        // Outline
-        ctx.globalAlpha = 1;
-        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-        ctx.lineWidth   = 1;
-        ctx.strokeRect(tl.x + 0.5, tl.y + 0.5, sw - 1, sh - 1);
-
-        // Label
-        if (sw > 20 && sh > 10) {
-            ctx.fillStyle = 'rgba(255,255,255,0.85)';
-            ctx.font = `${Math.max(9, Math.min(12, this.scaleToScreen(11)))}px monospace`;
-            ctx.textBaseline = 'middle';
-            ctx.textAlign    = 'center';
-            ctx.globalAlpha  = 0.9;
-            const label = w.app_name || w.base_name;
-            ctx.fillText(label, tl.x + sw / 2, tl.y + sh / 2, sw - 4);
-        }
-
-        ctx.restore();
-
-        // Children (paint on top)
+        // Children (paint on top of parent)
         for (const child of w.children) {
             this.drawWidget(child);
         }
