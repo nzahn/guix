@@ -38,8 +38,13 @@ export interface FontPageInfo {
 export interface GxPixelmapData {
     width: number;
     height: number;
-    /** Raw decoded pixel bytes in the output color format */
+    /** Raw decoded pixel bytes in the output color format (main data stream). */
     data: Uint8Array;
+    /**
+     * Auxiliary data stream — only present for formats that use a separate
+     * count stream during RLE compression (e.g. GX_COLOR_FORMAT_32ARGB).
+     */
+    auxData?: Uint8Array;
     /** Delay (ms) used when this pixelmap is a sprite frame */
     delay: number;
 }

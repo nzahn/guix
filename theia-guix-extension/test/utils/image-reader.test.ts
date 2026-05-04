@@ -218,3 +218,102 @@ describe('readImage error handling', () => {
         ).rejects.toThrow('Not a valid GIF');
     });
 });
+
+// ===========================================================================
+// RLE compression — 565RGB
+// ===========================================================================
+
+describe('RLE compression — 565RGB (format 14)', () => {
+
+    /** Build a 1-row PNG where every pixel is the same colour (solid colour). */
+    function makeSolidPng(width: number, r: number, g: number, b: number): Uint8Array {
+        const png = new PNG({ width, height: 1 });
+        const buf = Buffer.alloc(width * 4);
+        for (let i = 0; i < width; i++) {
+            buf[i * 4 + 0] = r;
+            buf[i * 4 + 1] = g;
+            buf[i * 4 + 2] = b;
+            buf[i * 4 + 3] = 255;
+        }
+        png.data = buf;
+        return new Uint8Array(PNG.sync.write(png));
+    }
+
+    /** Build an N-pixel PNG alternating between two colours. */
+    function makeAltPng(width: number): Uint8Array {
+        const png = new PNG({ width, height: 1 });
+        const buf = Buffer.alloc(width * 4);
+        for (let i = 0; i < width; i++) {
+            const r = i % 2 === 0 ? 255 : 0;
+            buf[i * 4 + 0] = r;
+            buf[i * 4 + 1] = 0;
+            buf[i * 4 + 2] = 0;
+            buf[i * 4 + 3] = 255;
+        }
+        png.data = buf;
+        return new Uint8Array(PNG.sync.write(png));
+    }
+
+    test('solid 4-pixel row compresses smaller than raw (565)', async () => {
+        const compressed = await readImage(makeSolidPng(4, 255, 0, 0), 'png', GX_COLOR_FORMAT_565RGB, true,  false);
+        const raw        = await readImage(makeSolidPng(4, 255, 0, 0), 'png', GX_COLOR_FORMAT_565RGB, false, false);
+        // A solid 4-pixel row → 1 repeat run: 2 bytes count word + 2 bytes pixel < 8 bytes raw
+        expect(compressed.data.length).toBeLessThan(raw.data.length);
+    });
+
+    test('compressed 565 result has no auxData', async () => {
+        const result = await readImage(makeSolidPng(8, 0, 255, 0), 'png', GX_COLOR_FORMAT_565RGB, true, false);
+        expect(result.auxData).toBeUndefined();
+    });
+
+    test('alternating pixels (2 identical needed for run) handled as raw runs', async () => {
+        // All pixels differ → the output should be raw runs, still a valid byte array
+        const result = await readImage(makeAltPng(8), 'png', GX_COLOR_FORMAT_565RGB, true, false);
+        expect(result.data.length).toBeGreaterThan(0);
+    });
+
+    test('compress=false yields no compression', async () => {
+        const result = await readImage(makeSolidPng(4, 0, 0, 255), 'png', GX_COLOR_FORMAT_565RGB, false, false);
+        // Raw: 4 pixels × 2 bytes = 8 bytes
+        expect(result.data.length).toBe(8);
+        expect(result.auxData).toBeUndefined();
+    });
+});
+
+// ===========================================================================
+// RLE compression — 32ARGB (format 22) — uses aux stream
+// ===========================================================================
+
+describe('RLE compression — 32ARGB (format 22)', () => {
+
+    function makeSolid32Png(width: number): Uint8Array {
+        const png = new PNG({ width, height: 1 });
+        const buf = Buffer.alloc(width * 4, 0);
+        for (let i = 0; i < width; i++) {
+            buf[i * 4 + 0] = 255; // R
+            buf[i * 4 + 1] = 0;
+            buf[i * 4 + 2] = 0;
+            buf[i * 4 + 3] = 255; // A
+        }
+        png.data = buf;
+        return new Uint8Array(PNG.sync.write(png));
+    }
+
+    test('solid row produces auxData stream for 32ARGB', async () => {
+        const result = await readImage(makeSolid32Png(4), 'png', GX_COLOR_FORMAT_32ARGB, true, true);
+        // 32ARGB compressed always returns an aux (count) stream
+        expect(result.auxData).toBeDefined();
+        expect(result.auxData!.length).toBeGreaterThan(0);
+    });
+
+    test('solid 32ARGB row compresses main pixel data smaller than raw', async () => {
+        const compressed = await readImage(makeSolid32Png(4), 'png', GX_COLOR_FORMAT_32ARGB, true,  true);
+        const raw        = await readImage(makeSolid32Png(4), 'png', GX_COLOR_FORMAT_32ARGB, false, true);
+        expect(compressed.data.length).toBeLessThan(raw.data.length);
+    });
+
+    test('compress=false → no auxData for 32ARGB', async () => {
+        const result = await readImage(makeSolid32Png(4), 'png', GX_COLOR_FORMAT_32ARGB, false, true);
+        expect(result.auxData).toBeUndefined();
+    });
+});

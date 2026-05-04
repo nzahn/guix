@@ -99,13 +99,25 @@ export async function readImage(
     const { width, height, rgba } = await adapter.decode(bytes, format);
 
     const pixelData = convertToOutputFormat(rgba, width, height, outputFormat, keepAlpha);
-    const finalData = compress ? compressRle(pixelData, outputFormat) : pixelData;
+
+    let finalData  = pixelData;
+    let finalAux: Uint8Array | undefined;
+
+    if (compress) {
+        const compressed = compressRle(pixelData, outputFormat, width, height);
+        // Only use compressed data if it is actually smaller
+        if (compressed.data.length < pixelData.length) {
+            finalData = compressed.data;
+            finalAux  = compressed.auxData;
+        }
+    }
 
     const result: GxPixelmapData = {
         width,
         height,
-        data:  finalData,
-        delay: 0,
+        data:    finalData,
+        ...(finalAux !== undefined && { auxData: finalAux }),
+        delay:   0,
     };
     return result;
 }
@@ -163,12 +175,213 @@ function convertToOutputFormat(
 }
 
 // ---------------------------------------------------------------------------
-// Run-length compression (mirrors binary_resource_gen.cpp WriteCompressed)
+// Run-length compression — mirrors image_reader::Compress / RleEncodeRow
 // ---------------------------------------------------------------------------
 
-/** Perform a simple 16-bit-word RLE compression over pixel data. */
-function compressRle(data: Uint8Array, _outputFormat: number): Uint8Array {
-    // Placeholder: return uncompressed data until full RLE is implemented.
-    void _outputFormat;
-    return data;
+/**
+ * GUIX RLE compressor.  Operates row-by-row; output format determines the
+ * count-word size and whether counts live in a separate auxiliary stream.
+ *
+ * Encoding rules (from image_reader.cpp):
+ *  - Count consecutive identical pixels at each position (CountDuplicates).
+ *  - If ≥ 3 duplicates → repeat run: flush pending raw run, write count word
+ *    (repeat flag set) then ONE pixel value.
+ *  - Otherwise → raw run: accumulate ONE pixel, flush when 128 pixels or end
+ *    of row.
+ *
+ * Count-word format by output format:
+ *  - GX_COLOR_FORMAT_565RGB  (14): 2-byte LE uint16; bit 15 = repeat flag.
+ *  - GX_COLOR_FORMAT_32ARGB  (22): 1-byte count in a separate aux stream;
+ *    bit 7 = repeat flag.  Main stream carries pixel bytes only.
+ *  - All other 8-bit formats: 1-byte count in main stream; bit 7 = repeat.
+ *
+ * Returns { data, auxData? }.  auxData is only set for 32ARGB.
+ * The caller is responsible for skipping compression when the result is
+ * larger than the original (image-reader.ts already handles that check).
+ */
+function compressRle(
+    data: Uint8Array,
+    outputFormat: number,
+    width: number,
+    height: number,
+): { data: Uint8Array; auxData?: Uint8Array } {
+
+    // GX_COLOR_FORMAT_565RGB = 14
+    if (outputFormat === 14) {
+        return { data: compressRle565(data, width, height) };
+    }
+
+    // GX_COLOR_FORMAT_32ARGB = 22
+    if (outputFormat === 22) {
+        return compressRle32argb(data, width, height);
+    }
+
+    // 8-bit formats — 1-byte count in main stream
+    return { data: compressRle8(data, width, height) };
+}
+
+// ---------------------------------------------------------------------------
+// 565RGB  (16-bit pixels, 2-byte count word in main stream, no aux)
+// ---------------------------------------------------------------------------
+
+function readU16LE(src: Uint8Array, offset: number): number {
+    return src[offset] | (src[offset + 1] << 8);
+}
+
+function compressRle565(data: Uint8Array, width: number, height: number): Uint8Array {
+    const bytesPerPx = 2;
+    const parts: number[] = [];
+
+    for (let row = 0; row < height; row++) {
+        const rowOff = row * width * bytesPerPx;
+        let pos = 0;
+        const rawPixBuf: number[] = [];  // raw pixels accumulated this run
+
+        const flushRaw = (): void => {
+            if (rawPixBuf.length === 0) return;
+            const countWord = (rawPixBuf.length / bytesPerPx - 1) & 0x7FFF;
+            parts.push(countWord & 0xFF, (countWord >> 8) & 0xFF);
+            for (const b of rawPixBuf) parts.push(b);
+            rawPixBuf.length = 0;
+        };
+
+        while (pos < width) {
+            // Count identical pixels from pos
+            const pix = readU16LE(data, rowOff + pos * bytesPerPx);
+            let dupes = 1;
+            while (pos + dupes < width &&
+                   readU16LE(data, rowOff + (pos + dupes) * bytesPerPx) === pix) {
+                dupes++;
+            }
+
+            if (dupes >= 3) {
+                flushRaw();
+                const countWord = ((dupes - 1) | 0x8000) & 0xFFFF;
+                parts.push(countWord & 0xFF, (countWord >> 8) & 0xFF);
+                parts.push(data[rowOff + pos * bytesPerPx],
+                           data[rowOff + pos * bytesPerPx + 1]);
+                pos += dupes;
+            } else {
+                rawPixBuf.push(data[rowOff + pos * bytesPerPx],
+                               data[rowOff + pos * bytesPerPx + 1]);
+                pos++;
+                if (rawPixBuf.length / bytesPerPx === 128 || pos === width) {
+                    flushRaw();
+                }
+            }
+        }
+    }
+
+    return new Uint8Array(parts);
+}
+
+// ---------------------------------------------------------------------------
+// 32ARGB  (32-bit pixels, 1-byte count in aux stream)
+// ---------------------------------------------------------------------------
+
+function compressRle32argb(
+    data: Uint8Array,
+    width: number,
+    height: number,
+): { data: Uint8Array; auxData: Uint8Array } {
+    const bytesPerPx = 4;
+    const mainParts: number[] = [];
+    const auxParts:  number[] = [];
+
+    function readPx32(rowOff: number, col: number): number {
+        const off = rowOff + col * bytesPerPx;
+        return (data[off] << 24) | (data[off + 1] << 16) |
+               (data[off + 2] << 8) | data[off + 3];
+    }
+
+    for (let row = 0; row < height; row++) {
+        const rowOff = row * width * bytesPerPx;
+        let pos = 0;
+        const rawPixBuf: number[] = [];
+
+        const flushRaw = (): void => {
+            if (rawPixBuf.length === 0) return;
+            const n = rawPixBuf.length / bytesPerPx;
+            auxParts.push((Math.min(n, 128) - 1) & 0x7F);
+            for (const b of rawPixBuf) mainParts.push(b);
+            rawPixBuf.length = 0;
+        };
+
+        while (pos < width) {
+            const pix = readPx32(rowOff, pos);
+            let dupes = 1;
+            while (pos + dupes < width && readPx32(rowOff, pos + dupes) === pix) {
+                dupes++;
+            }
+
+            if (dupes >= 3) {
+                flushRaw();
+                const n = Math.min(dupes, 128);
+                auxParts.push(((n - 1) | 0x80) & 0xFF);
+                mainParts.push(data[rowOff + pos * bytesPerPx],
+                               data[rowOff + pos * bytesPerPx + 1],
+                               data[rowOff + pos * bytesPerPx + 2],
+                               data[rowOff + pos * bytesPerPx + 3]);
+                pos += n;
+            } else {
+                rawPixBuf.push(data[rowOff + pos * bytesPerPx],
+                               data[rowOff + pos * bytesPerPx + 1],
+                               data[rowOff + pos * bytesPerPx + 2],
+                               data[rowOff + pos * bytesPerPx + 3]);
+                pos++;
+                if (rawPixBuf.length / bytesPerPx === 128 || pos === width) {
+                    flushRaw();
+                }
+            }
+        }
+    }
+
+    return {
+        data:    new Uint8Array(mainParts),
+        auxData: new Uint8Array(auxParts),
+    };
+}
+
+// ---------------------------------------------------------------------------
+// 8-bit formats  (1-byte count in main stream)
+// ---------------------------------------------------------------------------
+
+function compressRle8(data: Uint8Array, width: number, height: number): Uint8Array {
+    const parts: number[] = [];
+
+    for (let row = 0; row < height; row++) {
+        const rowOff = row * width;
+        let pos = 0;
+        const rawBuf: number[] = [];
+
+        const flushRaw = (): void => {
+            if (rawBuf.length === 0) return;
+            parts.push((Math.min(rawBuf.length, 128) - 1) & 0x7F);
+            for (const b of rawBuf) parts.push(b);
+            rawBuf.length = 0;
+        };
+
+        while (pos < width) {
+            const pix = data[rowOff + pos];
+            let dupes = 1;
+            while (pos + dupes < width && data[rowOff + pos + dupes] === pix) {
+                dupes++;
+            }
+
+            if (dupes >= 3) {
+                flushRaw();
+                const n = Math.min(dupes, 128);
+                parts.push(((n - 1) | 0x80) & 0xFF, pix);
+                pos += n;
+            } else {
+                rawBuf.push(pix);
+                pos++;
+                if (rawBuf.length === 128 || pos === width) {
+                    flushRaw();
+                }
+            }
+        }
+    }
+
+    return new Uint8Array(parts);
 }

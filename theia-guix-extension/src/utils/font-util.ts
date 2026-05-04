@@ -39,8 +39,13 @@ export interface GxGlyph {
 export interface GxFont {
     /** GX color format for glyph maps (GX_FONT_FORMAT_*). */
     format:      number;
-    /** Pixel height of the font (em height). */
+    /** Pixel height of the font (em height = gx_font_line_height). */
     height:      number;
+    /**
+     * Maximum ascent across all glyphs = gx_font_baseline.
+     * Used in WriteFontPage to emit the baseline offset field.
+     */
+    baseline:    number;
     firstGlyph:  number;   // first Unicode code point
     lastGlyph:   number;   // last Unicode code point
     glyphs:      GxGlyph[];
@@ -169,9 +174,19 @@ export async function generateFontData(
         pos += part.length;
     }
 
+    // Compute font-level metrics (mirrors FONT_METRICS in gx_studio_font_util.cpp)
+    let maxAscent  = 0;
+    let maxDescent = 0;
+    for (const g of glyphs) {
+        if (g.ascent  > maxAscent)  maxAscent  = g.ascent;
+        if (g.descent > maxDescent) maxDescent = g.descent;
+    }
+    const lineHeight = Math.max(pixelHeight, maxAscent + maxDescent);
+
     const font: GxFont = {
         format:     bpp,
-        height:     pixelHeight,
+        height:     lineHeight,
+        baseline:   maxAscent,
         firstGlyph,
         lastGlyph,
         glyphs,

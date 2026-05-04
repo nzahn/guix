@@ -187,6 +187,14 @@ export class SourceWriter {
 
     // ── Finalise ───────────────────────────────────────────────────────────
 
+    /**
+     * Append a pre-formatted block verbatim (no CRLF added).
+     * Used when the caller has already formatted the text with embedded CRLF.
+     */
+    rawBlock(text: string): void {
+        this.lines.push(text);
+    }
+
     /** Return the complete file contents as a single string. */
     toString(): string {
         return this.lines.join('');

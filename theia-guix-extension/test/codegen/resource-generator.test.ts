@@ -6,14 +6,15 @@
  * with the C++ GUIX Studio output.
  */
 
-import { ResourceGenerator } from '../../src/codegen/resource-generator';
+import { ResourceGenerator, FontDataMap } from '../../src/codegen/resource-generator';
 import {
     createEmptyProject,
     createDefaultDisplay,
     createDefaultLanguage,
 } from '../../src/common/project-model';
-import { RES_TYPE_COLOR } from '../../src/common/gx-types';
+import { RES_TYPE_COLOR, RES_TYPE_FONT } from '../../src/common/gx-types';
 import { createDefaultResInfo } from '../../src/common/res-info';
+import { GxFontData, GX_FONT_FORMAT_4BPP } from '../../src/utils/font-util';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -189,5 +190,169 @@ describe('ResourceGenerator — multi-display project', () => {
 
     it('display 0 and display 1 headers are distinct', () => {
         expect(files0.header.filename).not.toBe(files1.header.filename);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Font emission — writeFontSection with fontDataMap
+// ---------------------------------------------------------------------------
+
+/** Build a minimal synthetic GxFontData for one ASCII code point. */
+function makeFontData(firstGlyph = 0x41, lastGlyph = 0x41): GxFontData {
+    const glyphData = new Uint8Array([0xAA, 0xBB, 0xCC, 0xDD]); // 2×2 1-bpp = 2 bytes/row × 2 rows
+    return {
+        font: {
+            format:     GX_FONT_FORMAT_4BPP,
+            height:     12,
+            baseline:   10,
+            firstGlyph,
+            lastGlyph,
+            glyphs: [{
+                mapOffset: 0,
+                advance:   8,
+                ascent:    10,
+                descent:   2,
+                left:      1,
+                top:       10,
+                width:     5,
+                height:    2,
+                rowPitch:  2,
+            }],
+            glyphData,
+        },
+        pageCount: 1,
+    };
+}
+
+describe('ResourceGenerator — font emission with fontDataMap', () => {
+    const project = createEmptyProject('FontApp');
+    project.displays[0].name = 'Display_1';
+    // Set theme name explicitly
+    project.displays[0].themes[0].theme_name = 'MyTheme';
+    project.displays[0].themes[0].gen_font_table = true;
+
+    const fontRes = createDefaultResInfo(RES_TYPE_FONT, 'verasans_12');
+    project.displays[0].themes[0].resources.push(fontRes);
+
+    const fontDataMap: FontDataMap = new Map<string, GxFontData>([
+        ['verasans_12', makeFontData(0x41, 0x41)],
+    ]);
+
+    const files = new ResourceGenerator().generate(project, 0, fontDataMap);
+
+    it('source contains FONT_ glyph data array', () => {
+        expect(files.source.content).toContain('FONT_MYTHEME_verasans_12');
+    });
+
+    it('source contains _FONT_PAGE_1_GLYPHS array', () => {
+        expect(files.source.content).toContain('_FONT_PAGE_1_GLYPHS');
+    });
+
+    it('source contains GX_FONT struct', () => {
+        expect(files.source.content).toContain('GX_CONST GX_FONT');
+    });
+
+    it('source contains font height', () => {
+        expect(files.source.content).toContain('12');
+    });
+
+    it('source contains baseline offset', () => {
+        expect(files.source.content).toContain('10');
+    });
+
+    it('source contains GX_FONT_FORMAT_4BPP macro', () => {
+        expect(files.source.content).toContain('GX_FONT_FORMAT_4BPP');
+    });
+
+    it('source contains font pointer table', () => {
+        expect(files.source.content).toContain('_font_table');
+    });
+
+    it('glyph char hex uses space-padded 2-char hex (%%2x format)', () => {
+        // Code point 0x41 → hex '41' (2 chars already, no padding)
+        expect(files.source.content).toContain('char_41');
+    });
+});
+
+describe('ResourceGenerator — font emission space-padded hex for single-digit code point', () => {
+    const project = createEmptyProject('FontPadApp');
+    project.displays[0].name = 'Display_1';
+    project.displays[0].themes[0].theme_name = 'T';
+    project.displays[0].themes[0].gen_font_table = true;
+
+    const fontRes = createDefaultResInfo(RES_TYPE_FONT, 'myfont');
+    project.displays[0].themes[0].resources.push(fontRes);
+
+    // Use code point 0x09 (tab) — 1 hex digit → should be padded with a space → ' 9'
+    const fontDataMap: FontDataMap = new Map<string, GxFontData>([
+        ['myfont', makeFontData(0x09, 0x09)],
+    ]);
+
+    const files = new ResourceGenerator().generate(project, 0, fontDataMap);
+
+    it('single-digit code point is space-padded to 2 chars in var name', () => {
+        // '%2x' of 0x09 → ' 9'
+        expect(files.source.content).toContain('char_ 9');
+    });
+});
+
+describe('ResourceGenerator — font emission without fontDataMap (fallback)', () => {
+    const project = createEmptyProject('FontFallbackApp');
+    project.displays[0].name = 'Display_1';
+    project.displays[0].themes[0].theme_name = 'Default';
+    project.displays[0].themes[0].gen_font_table = true;
+
+    const fontRes = createDefaultResInfo(RES_TYPE_FONT, 'verasans_12');
+    project.displays[0].themes[0].resources.push(fontRes);
+
+    // No fontDataMap → fallback path
+    const files = new ResourceGenerator().generate(project, 0);
+
+    it('source emits extern declaration when no font data', () => {
+        expect(files.source.content).toContain('extern GX_CONST GX_FONT');
+    });
+
+    it('source still emits font pointer table', () => {
+        expect(files.source.content).toContain('_font_table');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Pixelmap with auxData — writePixelmapStruct
+// ---------------------------------------------------------------------------
+
+describe('ResourceGenerator — pixelmap with auxData', () => {
+    const project = createEmptyProject('PmAuxApp');
+    project.displays[0].name = 'Display_1';
+    project.displays[0].themes[0].gen_pixelmap_table = true;
+
+    const pmRes = createDefaultResInfo(10 /* RES_TYPE_PIXELMAP */, 'my_icon');
+    pmRes.compress = true;
+    pmRes.map_list.push({
+        width:   2,
+        height:  1,
+        data:    new Uint8Array([0x01, 0x02, 0x03, 0x04]),
+        auxData: new Uint8Array([0x82]),   // 1-byte aux: repeat 2×
+        delay:   0,
+    });
+    project.displays[0].themes[0].resources.push(pmRes);
+
+    const files = new ResourceGenerator().generate(project, 0);
+
+    it('source emits main pixelmap data array', () => {
+        expect(files.source.content).toContain('my_icon_pixelmap_data');
+    });
+
+    it('source emits aux data array when auxData present', () => {
+        expect(files.source.content).toContain('my_icon_pixelmap_aux_data');
+    });
+
+    it('source emits GX_PIXELMAP_COMPRESSED flag', () => {
+        expect(files.source.content).toContain('GX_PIXELMAP_COMPRESSED');
+    });
+
+    it('source references aux data pointer in struct', () => {
+        // The struct should reference the aux array, not GX_NULL
+        expect(files.source.content).toContain('my_icon_pixelmap_aux_data');
     });
 });

@@ -26,6 +26,36 @@ import {
 } from '../common/gx-types';
 import { GxpProject, DisplayInfo, ThemeInfo, StringEntry } from '../common/project-model';
 import { ResInfo } from '../common/res-info';
+import type { GxFontData } from '../utils/font-util';
+
+// ---------------------------------------------------------------------------
+// Font name helpers (mirror resource_gen.cpp MakeFontName / m_ThemeName)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the C variable name prefix for a font, matching the C++ convention:
+ *   `${THEME_NAME_UPPER}_${font_res_name}`
+ * e.g. theme="Default", name="verasans_12" → "DEFAULT_verasans_12"
+ */
+function makeFontVarName(themeName: string, fontName: string): string {
+    return `${themeName.toUpperCase()}_${fontName}`;
+}
+
+/** Hex char code string for a glyph data array name: FONT_{fontVar}_char_{HEX} */
+function glyphDataVarName(fontVar: string, codePoint: number): string {
+    return `FONT_${fontVar}_char_${codePoint.toString(16).padStart(2, ' ')}`;
+}
+
+/** C format string for GX_FONT_FORMAT_*BPP constant */
+function fontFormatMacro(bpp: number): string {
+    switch (bpp) {
+        case 1: return 'GX_FONT_FORMAT_1BPP';
+        case 2: return 'GX_FONT_FORMAT_2BPP';
+        case 4: return 'GX_FONT_FORMAT_4BPP';
+        case 8: return 'GX_FONT_FORMAT_8BPP';
+        default: return `GX_FONT_FORMAT_${bpp}BPP`;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Error class
@@ -52,6 +82,13 @@ export interface ResourceFiles {
     source: GeneratedFile;
 }
 
+/**
+ * Optional pre-generated font data keyed by font resource name.
+ * Populate by calling generateFontData() from font-util.ts for each
+ * font resource before calling ResourceGenerator.generate().
+ */
+export type FontDataMap = ReadonlyMap<string, GxFontData>;
+
 // ---------------------------------------------------------------------------
 // ResourceGenerator
 // ---------------------------------------------------------------------------
@@ -62,10 +99,16 @@ export class ResourceGenerator {
     /**
      * Generate *_resources.h + *_resources.c for one display.
      *
-     * @param project  Loaded project model
-     * @param dispIdx  Index into project.displays
+     * @param project      Loaded project model
+     * @param dispIdx      Index into project.displays
+     * @param fontDataMap  Pre-generated font data keyed by res_info.name.
+     *                     When absent, font glyph arrays are omitted.
      */
-    generate(project: GxpProject, dispIdx: number): ResourceFiles {
+    generate(
+        project: GxpProject,
+        dispIdx: number,
+        fontDataMap?: FontDataMap,
+    ): ResourceFiles {
         const disp = project.displays[dispIdx];
         if (!disp) throw new GxCodegenError(`Display index ${dispIdx} out of range`);
 
@@ -85,7 +128,7 @@ export class ResourceGenerator {
             },
             source: {
                 filename: baseName + '.c',
-                content:  this.generateSource(project, disp, dispIdx, baseName, studioVer, now),
+                content:  this.generateSource(project, disp, dispIdx, baseName, studioVer, now, fontDataMap),
             },
         };
     }
@@ -202,6 +245,7 @@ export class ResourceGenerator {
         baseName: string,
         studioVer: string,
         now: Date,
+        fontDataMap?: FontDataMap,
     ): string {
         const w     = new SourceWriter();
         const dName = sanitizeName(disp.name);
@@ -218,7 +262,7 @@ export class ResourceGenerator {
             if (disp.colorformat === GX_COLOR_FORMAT_8BIT_PALETTE) {
                 this.writePalette(w, theme, tPrefix);
             }
-            this.writeFontTable(w, theme, tPrefix);
+            this.writeFontSection(w, theme, tPrefix, fontDataMap);
             this.writePixelmapTable(w, theme, tPrefix);
             this.writeThemeStruct(w, disp, theme, ti, tPrefix);
         }
@@ -249,18 +293,151 @@ export class ResourceGenerator {
         w.writeArray('GX_CONST GX_COLOR', `${tPrefix}_palette`, values);
     }
 
-    // ── Font table ───────────────────────────────────────────────────────────
+    // ── Font section (data arrays + GX_FONT structs + pointer table) ─────────
 
-    private writeFontTable(w: SourceWriter, theme: ThemeInfo, tPrefix: string): void {
+    /**
+     * Emits everything for a theme's fonts:
+     *   1. Per-glyph bitmap data arrays  (FONT_<fontVar>_char_<hex>[])
+     *   2. GX_GLYPH table array          (<fontVar>_FONT_PAGE_1_GLYPHS[])
+     *   3. GX_FONT struct                (<fontVar>)
+     *   4. GX_FONT* pointer table        (<tPrefix>_font_table[])
+     *
+     * Mirrors resource_gen.cpp WriteFont() + WriteFontPage() + WriteFontTable().
+     * When fontDataMap is absent (or has no entry for a font), the GX_FONT struct
+     * is emitted as a forward-declared extern, and the glyph data is skipped.
+     */
+    private writeFontSection(
+        w: SourceWriter,
+        theme: ThemeInfo,
+        tPrefix: string,
+        fontDataMap?: FontDataMap,
+    ): void {
         if (!theme.gen_font_table) return;
         const fonts = collectByType(theme.resources, RES_TYPE_FONT);
         if (fonts.length === 0) return;
 
-        // Font data arrays (GX_GLYPH / GX_FONT structs) are generated by the
-        // font-util module from TrueType input — this pass only emits the pointer table.
-        // Glyph data emission is deferred to Phase 4 font-util integration.
-        const ptrs: string[] = fonts.map(f => `&${tPrefix}_${sanitizeName(f.name)}_font`);
+        // Theme name from tPrefix: "Display_1_Default" → theme part is "Default"
+        // We need the uppercase theme name for the font var name.
+        // tPrefix format: <dispName>_<themeName>
+        // The theme name is the portion after the first underscore-separated dispName.
+        // Use the whole tPrefix uppercased as the base for font vars, matching C++:
+        //   name.Format("%s_%s", m_ThemeName.MakeUpper(), info->name)
+        // So we split tPrefix to get just the theme portion (everything after first '_<disp>_'):
+        // Actually C++ uses m_ThemeName (the raw theme name), not the display-prefixed tPrefix.
+        // We recover it from the theme object's theme_name field.
+        // The font var name is: THEME_NAME_UPPER + "_" + font_res_name
+        // e.g. tPrefix = "Display_1_Default", theme.theme_name = "Default"
+        //   → fontVar = "DEFAULT_verasans_12"
+        const themeName = theme.theme_name;
+
+        for (const font of fonts) {
+            const fontVar  = makeFontVarName(themeName, font.name);
+            const fontData = fontDataMap?.get(font.name);
+
+            if (fontData) {
+                this.writeFontPageData(w, fontVar, fontData);
+            }
+
+            // Emit the GX_FONT struct (or forward declaration when no data)
+            const fontStructVar = `${fontVar}`;
+            if (fontData) {
+                this.writeFontStruct(w, fontStructVar, fontData);
+            } else {
+                // No font data — emit an extern declaration so the pointer table
+                // still compiles (linker will find it from the custom output file).
+                w.writeLine(`extern GX_CONST GX_FONT ${fontStructVar};`);
+                w.blank();
+            }
+        }
+
+        // Pointer table:  GX_FONT* array[N]  (element 0 = GX_NULL)
+        const ptrs: string[] = fonts.map(f => `&${makeFontVarName(themeName, f.name)}`);
         w.writeArray('GX_CONST GX_FONT *', `${tPrefix}_font_table`, ptrs, 1);
+    }
+
+    /**
+     * Emit per-glyph bitmap data arrays + GX_GLYPH table for one font page.
+     * Mirrors resource_gen.cpp WriteFontPage() (non-compressed, non-kerning path,
+     * guix_version >= 50402 field order).
+     */
+    private writeFontPageData(
+        w: SourceWriter,
+        fontVar: string,
+        fontData: GxFontData,
+    ): void {
+        const { font } = fontData;
+        let glyphDataOffset = 0;
+
+        // ── Per-glyph bitmap data arrays ──────────────────────────────────
+        for (let i = 0; i < font.glyphs.length; i++) {
+            const glyph = font.glyphs[i];
+            const cp    = font.firstGlyph + i;
+
+            const dataSize = glyph.rowPitch * glyph.height;
+            if (dataSize === 0) continue;   // whitespace / missing glyph — no array
+
+            const varName = glyphDataVarName(fontVar, cp);
+            const bytes   = Array.from(
+                font.glyphData.subarray(glyphDataOffset, glyphDataOffset + dataSize),
+            ).map(b => `0x${b.toString(16).padStart(2, '0')}`);
+
+            w.writeArray(`static GX_CONST GX_UBYTE`, varName, bytes);
+            glyphDataOffset += dataSize;
+        }
+
+        // ── GX_GLYPH table ────────────────────────────────────────────────
+        const glyphCount = font.lastGlyph - font.firstGlyph + 1;
+        const glyphLines: string[] = [];
+
+        for (let i = 0; i < font.glyphs.length; i++) {
+            const glyph = font.glyphs[i];
+            const cp    = font.firstGlyph + i;
+            const dataSize = glyph.rowPitch * glyph.height;
+
+            const mapPtr = dataSize > 0
+                ? glyphDataVarName(fontVar, cp)
+                : 'GX_NULL';
+
+            // Field order (guix_version >= 50402):
+            //   {map, ascent, descent, advance, leading, width, height}
+            glyphLines.push(
+                `{${mapPtr}, ${glyph.ascent}, ${glyph.descent}, ` +
+                `${glyph.advance}, ${glyph.left}, ${glyph.width}, ${glyph.height}}`,
+            );
+        }
+
+        w.rawBlock(
+            `static GX_CONST GX_GLYPH ${fontVar}_FONT_PAGE_1_GLYPHS[${glyphCount}] =\r\n` +
+            `{\r\n` +
+            glyphLines.map((l, i) => `    ${l}${i < glyphLines.length - 1 ? ',' : ''}`).join('\r\n') +
+            `\r\n};\r\n`,
+        );
+    }
+
+    /**
+     * Emit GX_FONT struct for one page.
+     * Mirrors WriteFontPage() link-format section (guix_version >= 50402).
+     */
+    private writeFontStruct(
+        w: SourceWriter,
+        fontVar: string,
+        fontData: GxFontData,
+    ): void {
+        const { font } = fontData;
+        w.rawBlock(
+            `static GX_CONST GX_FONT ${fontVar} =\r\n` +
+            `{\r\n` +
+            `    ${fontFormatMacro(font.format)},        /* format */\r\n` +
+            `    0,         /* line pre-space */\r\n` +
+            `    0,         /* line post-space */\r\n` +
+            `    ${font.height},        /* font data height */\r\n` +
+            `    ${font.baseline},        /* font baseline offset */\r\n` +
+            `    0x${font.firstGlyph.toString(16)},    /* first glyph within data page */\r\n` +
+            `    0x${font.lastGlyph.toString(16)},    /* last glyph within data page */\r\n` +
+            `    {${fontVar}_FONT_PAGE_1_GLYPHS},    /* pointer to glyph data */\r\n` +
+            `    GX_NULL       /* next font page */\r\n` +
+            `};\r\n`,
+        );
     }
 
     // ── Pixelmap table ───────────────────────────────────────────────────────
@@ -287,22 +464,39 @@ export class ResourceGenerator {
     private writePixelmapStruct(w: SourceWriter, pm: ResInfo, tPrefix: string): void {
         const pmName  = `${tPrefix}_${sanitizeName(pm.name)}_pixelmap`;
         const dataVar = pmName + '_data';
+        const auxVar  = pmName + '_aux_data';
         const mapData = pm.map_list[0];
 
         if (mapData && mapData.data.length > 0) {
-            // Emit raw pixel data array
+            // Emit main pixel data array
             const bytes = Array.from(mapData.data).map(b => hex32(b));
             w.writeArray('GX_CONST GX_UBYTE', dataVar, bytes);
+
+            // Emit auxiliary (count) data array for compressed formats that use it
+            if (mapData.auxData && mapData.auxData.length > 0) {
+                const auxBytes = Array.from(mapData.auxData).map(b => hex32(b));
+                w.writeArray('GX_CONST GX_UBYTE', auxVar, auxBytes);
+            }
+
+            const compressedFlag = pm.compress ? 'GX_PIXELMAP_COMPRESSED' : '0';
+            const alphaFlag      = pm.keep_alpha ? '|GX_PIXELMAP_ALPHA' : '';
+            const flags          = pm.compress ? compressedFlag + alphaFlag : (pm.keep_alpha ? 'GX_PIXELMAP_ALPHA' : '0');
+
+            const hasAux = mapData.auxData && mapData.auxData.length > 0;
 
             w.writeStruct('GX_CONST GX_PIXELMAP', pmName, [
                 '0',                           // gx_pixelmap_version_major
                 '0',                           // gx_pixelmap_version_minor
-                pm.keep_alpha ? '1' : '0',     // gx_pixelmap_flags
+                flags,                         // gx_pixelmap_flags
                 '0',                           // gx_pixelmap_format
                 `(GX_CONST GX_UBYTE *) ${dataVar}`,
                 String(mapData.data.length),   // gx_pixelmap_data_size
-                `GX_NULL`,                     // gx_pixelmap_aux_data
-                '0',                           // gx_pixelmap_aux_data_size
+                hasAux
+                    ? `(GX_CONST GX_UBYTE *) ${auxVar}`
+                    : 'GX_NULL',               // gx_pixelmap_aux_data
+                hasAux
+                    ? String(mapData.auxData!.length)
+                    : '0',                     // gx_pixelmap_aux_data_size
                 String(mapData.width),
                 String(mapData.height),
             ]);
