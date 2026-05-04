@@ -1,0 +1,1 @@
+{"version":3,"file":"csv-rw.d.ts","sourceRoot":"","sources":["../../src/io/csv-rw.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;;;GAgBG;AAMH;;;;GAIG;AACH,MAAM,MAAM,MAAM,GAAG,MAAM,EAAE,CAAC;AAM9B;;;;;;GAMG;AACH,wBAAgB,OAAO,CAAC,IAAI,EAAE,MAAM,GAAG,MAAM,EAAE,CA0D9C;AAMD;;;;;;GAMG;AACH,wBAAgB,QAAQ,CAAC,IAAI,EAAE,aAAa,CAAC,aAAa,CAAC,MAAM,CAAC,CAAC,GAAG,MAAM,CAO3E"}
