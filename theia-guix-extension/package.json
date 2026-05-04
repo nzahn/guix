@@ -1,0 +1,163 @@
+{
+  "name": "guix-studio",
+  "displayName": "GUIX Studio",
+  "description": "Eclipse ThreadX GUIX Studio — cross-platform embedded GUI designer",
+  "version": "0.1.0",
+  "publisher": "eclipse-threadx",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "guixStudio.gxpEditor",
+        "displayName": "GUIX Studio",
+        "selector": [{ "filenamePattern": "*.gxp" }],
+        "priority": "default"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "guixStudio",
+          "title": "GUIX Studio",
+          "icon": "$(symbol-misc)"
+        }
+      ]
+    },
+    "views": {
+      "guixStudio": [
+        {
+          "id": "guixStudio.projectView",
+          "name": "Project",
+          "when": "guixStudio.projectOpen"
+        },
+        {
+          "id": "guixStudio.resourcePanel",
+          "name": "Resources",
+          "when": "guixStudio.projectOpen"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "guixStudio.projectView",
+        "contents": "No GUIX project open.\n[Open .gxp file](command:vscode.openWith)"
+      }
+    ],
+    "webviews": [
+      {
+        "id": "guixStudio.propertyPanel",
+        "retainContextWhenHidden": true
+      },
+      {
+        "id": "guixStudio.screenFlowEditor",
+        "retainContextWhenHidden": false
+      }
+    ],
+    "commands": [
+      {
+        "command": "guixStudio.generateCode",
+        "title": "GUIX Studio: Generate C Code",
+        "icon": "$(play)"
+      },
+      {
+        "command": "guixStudio.generateBinary",
+        "title": "GUIX Studio: Generate Binary Resources"
+      },
+      {
+        "command": "guixStudio.undo",
+        "title": "GUIX Studio: Undo"
+      },
+      {
+        "command": "guixStudio.redo",
+        "title": "GUIX Studio: Redo"
+      },
+      {
+        "command": "guixStudio.addDisplay",
+        "title": "GUIX Studio: Add Display"
+      },
+      {
+        "command": "guixStudio.selectDisplay",
+        "title": "GUIX Studio: Select Display"
+      },
+      {
+        "command": "guixStudio.selectTheme",
+        "title": "GUIX Studio: Select Theme"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "guixStudio.generateCode",
+          "when": "activeCustomEditorId == guixStudio.gxpEditor",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "guixStudio.generateCode",
+          "when": "guixStudio.projectOpen"
+        },
+        {
+          "command": "guixStudio.generateBinary",
+          "when": "guixStudio.projectOpen"
+        },
+        {
+          "command": "guixStudio.selectDisplay",
+          "when": "guixStudio.projectOpen"
+        },
+        {
+          "command": "guixStudio.selectTheme",
+          "when": "guixStudio.projectOpen"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "guixStudio.undo",
+        "key": "ctrl+z",
+        "when": "activeCustomEditorId == guixStudio.gxpEditor"
+      },
+      {
+        "command": "guixStudio.redo",
+        "key": "ctrl+shift+z",
+        "when": "activeCustomEditorId == guixStudio.gxpEditor"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "bundle": "webpack --config webpack.config.js",
+    "bundle:watch": "webpack --config webpack.config.js --watch",
+    "test": "jest",
+    "test:golden": "jest --testPathPattern=golden",
+    "lint": "eslint src --ext .ts",
+    "package": "vsce package",
+    "clean": "rm -rf dist out"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.8.10",
+    "inversify": "^6.0.2",
+    "reflect-metadata": "^0.2.2"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "@typescript-eslint/eslint-plugin": "^7.13.0",
+    "@typescript-eslint/parser": "^7.13.0",
+    "eslint": "^9.5.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.5",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.5.2",
+    "webpack": "^5.92.1",
+    "webpack-cli": "^5.1.4"
+  }
+}
