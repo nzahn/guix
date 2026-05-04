@@ -16,13 +16,19 @@ import * as vscode from 'vscode';
 import { injectable } from 'inversify';
 import { GxpProject } from '../common/project-model';
 import { WidgetInfo, GxRectangle } from '../common/widget-info';
+import {
+    RES_TYPE_COLOR,
+    RES_TYPE_FONT,
+    RES_TYPE_PIXELMAP,
+    RES_TYPE_STRING,
+} from '../common/gx-types';
 
 // ---------------------------------------------------------------------------
 // Publicly visible interface so other panels can call showWidget()
 // ---------------------------------------------------------------------------
 
 export interface IPropertyPanel {
-    showWidget(widget: WidgetInfo | null, project: GxpProject | null): void;
+    showWidget(widget: WidgetInfo | null, project: GxpProject | null, displayIdx?: number): void;
     widgetWasModified(widget: WidgetInfo): void;
 }
 
@@ -48,6 +54,7 @@ export class PropertyPanel implements vscode.WebviewViewProvider, IPropertyPanel
     private view: vscode.WebviewView | undefined;
     private currentWidget: WidgetInfo | null = null;
     private currentProject: GxpProject | null = null;
+    private currentDisplayIdx = 0;
 
     /** Listeners notified when the user edits a property. */
     private changeListeners: Array<(w: WidgetInfo, e: PropertyChangeEvent) => void> = [];
@@ -60,9 +67,10 @@ export class PropertyPanel implements vscode.WebviewViewProvider, IPropertyPanel
 
     // ── IPropertyPanel ─────────────────────────────────────────────────────
 
-    showWidget(widget: WidgetInfo | null, project: GxpProject | null): void {
-        this.currentWidget = widget;
-        this.currentProject = project;
+    showWidget(widget: WidgetInfo | null, project: GxpProject | null, displayIdx = 0): void {
+        this.currentWidget     = widget;
+        this.currentProject    = project;
+        this.currentDisplayIdx = displayIdx;
         this.updateView();
     }
 
@@ -88,7 +96,7 @@ export class PropertyPanel implements vscode.WebviewViewProvider, IPropertyPanel
 
     private updateView(): void {
         if (!this.view) return;
-        this.view.webview.html = this.buildHtml(this.view.webview, this.currentWidget);
+        this.view.webview.html = this.buildHtml(this.view.webview, this.currentWidget, this.currentDisplayIdx);
     }
 
     private onMessage(msg: unknown): void {
@@ -104,12 +112,12 @@ export class PropertyPanel implements vscode.WebviewViewProvider, IPropertyPanel
         for (const l of this.changeListeners) l(this.currentWidget, event);
     }
 
-    private buildHtml(_webview: vscode.Webview, widget: WidgetInfo | null): string {
+    private buildHtml(_webview: vscode.Webview, widget: WidgetInfo | null, displayIdx = 0): string {
         const nonce = generateNonce();
         const csp   = `default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';`;
 
         const body = widget
-            ? buildPropertyGroups(widget, this.currentProject)
+            ? buildPropertyGroups(widget, this.currentProject, displayIdx)
             : `<p class="empty">No widget selected.</p>`;
 
         return `<!DOCTYPE html>
@@ -202,11 +210,11 @@ ${body}
 // Property group builders  (mirrors AddWidgetProps() dispatch + per-type helpers)
 // ---------------------------------------------------------------------------
 
-function buildPropertyGroups(w: WidgetInfo, project: GxpProject | null): string {
+function buildPropertyGroups(w: WidgetInfo, project: GxpProject | null, displayIdx = 0): string {
     const groups: string[] = [];
     groups.push(groupCommon(w));
     groups.push(groupGeometry(w.size));
-    groups.push(groupAppearance(w, project));
+    groups.push(groupAppearance(w, project, displayIdx));
 
     // ── Widget-type-specific groups ────────────────────────────────────────
     const ext = w.ewi;
@@ -274,25 +282,24 @@ function groupGeometry(size: GxRectangle): string {
 // Group: Appearance
 // ---------------------------------------------------------------------------
 
-function groupAppearance(w: WidgetInfo, _project: GxpProject | null): string {
-    const borderOptions = [
+function groupAppearance(w: WidgetInfo, project: GxpProject | null, displayIdx: number): string {
+    const borderOptions: ReadonlyArray<readonly [number, string]> = [
         [0, 'None'],
         [1, 'Simple'],
         [2, 'Raised'],
         [3, 'Recessed'],
         [4, 'Thin'],
     ];
-    const borderSel = selectField('border', (w.style >> 8) & 0xF,
-        borderOptions.map(([v, l]) => option(Number(v), String(l))).join(''));
+    const borderSel = selectField('border', (w.style >> 8) & 0xF, borderOptions);
 
     return group('Appearance', [
         row('Border',          borderSel),
-        row('Normal Color',    numField('color_id.0', w.color_id[0])),
-        row('Selected Color',  numField('color_id.1', w.color_id[1])),
-        row('Disabled Color',  numField('color_id.2', w.color_id[2])),
-        row('Normal Font',     numField('font_id.0',  w.font_id[0])),
-        row('Normal Pixelmap', numField('pixelmap_id.0', w.pixelmap_id[0])),
-        row('String 0',        numField('string_id.0',   w.string_id[0])),
+        row('Normal Color',    selectField('color_id.0',    w.color_id[0],    resourceOpts(project, displayIdx, RES_TYPE_COLOR))),
+        row('Selected Color',  selectField('color_id.1',    w.color_id[1],    resourceOpts(project, displayIdx, RES_TYPE_COLOR))),
+        row('Disabled Color',  selectField('color_id.2',    w.color_id[2],    resourceOpts(project, displayIdx, RES_TYPE_COLOR))),
+        row('Normal Font',     selectField('font_id.0',     w.font_id[0],     resourceOpts(project, displayIdx, RES_TYPE_FONT))),
+        row('Normal Pixelmap', selectField('pixelmap_id.0', w.pixelmap_id[0], resourceOpts(project, displayIdx, RES_TYPE_PIXELMAP))),
+        row('String 0',        selectField('string_id.0',   w.string_id[0],   resourceOpts(project, displayIdx, RES_TYPE_STRING))),
     ]);
 }
 
@@ -305,6 +312,7 @@ function groupCallbacks(w: WidgetInfo): string {
         row('Event Func',  textField('event_func',    w.event_func)),
         row('Draw Func',   textField('draw_func',     w.draw_func)),
         row('Callback',    textField('callback_func', w.callback_func)),
+        row('Format Func', textField('format_func',   w.format_func)),
     ]);
 }
 
@@ -465,6 +473,27 @@ export function applyPropertyChange(widget: WidgetInfo, event: PropertyChangeEve
         return;
     }
 
+    // Extended widget info fields (sliders, gauges, text inputs, …)
+    if (field.startsWith('ext.')) {
+        const key = field.slice(4);
+        if (widget.ewi && 'info' in widget.ewi) {
+            const info = (widget.ewi as { kind: string; info: unknown }).info as Record<string, unknown>;
+            // String/numeric scroll wheel: base properties are nested under .base
+            const nestedWheel = widget.ewi.kind === 'string_scroll_wheel'
+                             || widget.ewi.kind === 'numeric_scroll_wheel';
+            const base = nestedWheel ? (info['base'] as Record<string, unknown> | undefined) : undefined;
+            const target: Record<string, unknown> =
+                (base && key in base) ? base : info;
+            if (key in target) {
+                const cur = target[key];
+                target[key] = typeof cur === 'boolean' ? Boolean(value)
+                            : typeof cur === 'number'  ? Number(value)
+                            : value;
+            }
+        }
+        return;
+    }
+
     // Style bit-flags
     if (field === 'style_visible')     { toggleStyleBit(widget, 0x00000001, Boolean(value)); return; }
     if (field === 'style_enabled')     { toggleStyleBit(widget, 0x00000002, Boolean(value)); return; }
@@ -520,12 +549,35 @@ function checkField(field: string, checked: boolean): string {
     return `<input type="checkbox" data-field="${escAttr(field)}"${checked ? ' checked' : ''}>`;
 }
 
-function selectField(field: string, _value: number, optionsHtml: string): string {
-    return `<select data-field="${escAttr(field)}">${optionsHtml}</select>`;
+function selectField(
+    field: string,
+    current: number,
+    opts: ReadonlyArray<readonly [number, string]>,
+): string {
+    const optHtml = opts
+        .map(([v, l]) => `<option value="${v}"${v === current ? ' selected' : ''}>${escHtml(l)}</option>`)
+        .join('');
+    return `<select data-field="${escAttr(field)}">${optHtml}</select>`;
 }
 
-function option(value: number, label: string): string {
-    return `<option value="${value}">${escHtml(label)}</option>`;
+// ---------------------------------------------------------------------------
+// Resource option helpers
+// ---------------------------------------------------------------------------
+
+function resourceOpts(
+    project: GxpProject | null,
+    displayIdx: number,
+    resType: number,
+): ReadonlyArray<readonly [number, string]> {
+    const result: Array<readonly [number, string]> = [[0, '(none)']];
+    const resources = project?.displays[displayIdx]?.themes[0]?.resources;
+    if (resources) {
+        let id = 1;
+        for (const res of resources) {
+            if (res.type === resType) result.push([id++, res.name]);
+        }
+    }
+    return result;
 }
 
 // ---------------------------------------------------------------------------
