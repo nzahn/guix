@@ -655,6 +655,11 @@ export class GxpReader {
                 display.active_theme = DEFAULT_THEME;
             }
 
+            // Mark themes beyond num_themes as disabled
+            for (let t = display.num_themes; t < MAX_THEMES; t++) {
+                display.themes[t].enabled = false;
+            }
+
             for (let t = 0; t < display.num_themes; t++) {
                 const theme = display.themes[t];
                 theme.theme_name              = themeSec.readString('theme_name', theme.theme_name);
