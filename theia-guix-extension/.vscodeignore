@@ -1,0 +1,18 @@
+# Development sources — not needed at runtime
+src/**
+test/**
+out/**
+
+# Config files
+tsconfig.json
+jest.config.js
+webpack.config.js
+.eslintrc*
+.gitignore
+
+# Node modules (dist/ bundles everything)
+node_modules/**
+
+# Other
+*.vsix
+.vscode/**
