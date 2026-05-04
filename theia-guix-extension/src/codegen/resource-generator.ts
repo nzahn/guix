@@ -29,6 +29,52 @@ import { ResInfo } from '../common/res-info';
 import type { GxFontData } from '../utils/font-util';
 
 // ---------------------------------------------------------------------------
+// Color format conversion  (mirrors resource_gen.cpp ColorConvert())
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a 32-bit ARGB color value (as stored in the .gxp) to the target
+ * display color format.  For 32-bit formats the value is returned unchanged.
+ * Mirrors the CStudioApp::ColorConvert() function in color_edit_dialog.cpp.
+ */
+function convertColor(argb: number, colorFormat: number): number {
+    // Extract ARGB channels from the 32-bit .gxp value
+    const a = (argb >>> 24) & 0xff;
+    const r = (argb >>> 16) & 0xff;
+    const g = (argb >>>  8) & 0xff;
+    const b = (argb       ) & 0xff;
+
+    switch (colorFormat) {
+        // 16-bit packed formats
+        case 14: // GX_COLOR_FORMAT_565RGB
+            return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+        case 17: // GX_COLOR_FORMAT_565BGR
+            return ((b >> 3) << 11) | ((g >> 2) << 5) | (r >> 3);
+        case 13: // GX_COLOR_FORMAT_1555XRGB
+            return ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+        case 12: // GX_COLOR_FORMAT_5551BGRX
+            return ((b >> 3) << 11) | ((g >> 3) << 6) | ((r >> 3) << 1);
+        case 15: // GX_COLOR_FORMAT_4444ARGB
+            return ((a >> 4) << 12) | ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+        case 16: // GX_COLOR_FORMAT_4444BGRA
+            return ((b >> 4) << 12) | ((g >> 4) << 8) | ((r >> 4) << 4) | (a >> 4);
+        // 24-bit formats
+        case 18: // GX_COLOR_FORMAT_24RGB
+        case 20: // GX_COLOR_FORMAT_24XRGB
+            return (r << 16) | (g << 8) | b;
+        case 19: // GX_COLOR_FORMAT_24BGR
+            return (b << 16) | (g << 8) | r;
+        // 8-bit gray
+        case 8:  // GX_COLOR_FORMAT_8BIT_GRAY
+        case 9:  // GX_COLOR_FORMAT_8BIT_GRAY_INVERTED
+            return Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+        // 32-bit and palette formats — no conversion
+        default:
+            return argb >>> 0;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Font name helpers (mirror resource_gen.cpp MakeFontName / m_ThemeName)
 // ---------------------------------------------------------------------------
 
@@ -172,7 +218,7 @@ export class ResourceGenerator {
             const tName = toMacroName(disp.name + '_' + theme.theme_name);
             w.define(tName, ti);
         }
-        w.define(`${dName}_THEME_TABLE_SIZE`, disp.themes.length);
+        w.define(`${dName}_THEME_TABLE_SIZE`, disp.themes.filter(t => t.enabled).length);
         w.blank();
 
         // ── Language defines ─────────────────────────────────────────────
@@ -258,7 +304,7 @@ export class ResourceGenerator {
         for (const [ti, theme] of disp.themes.entries()) {
             if (!theme.enabled) continue;
             const tPrefix = `${dName}_${sanitizeName(theme.theme_name)}`;
-            this.writeColorTable(w, theme, tPrefix);
+            this.writeColorTable(w, theme, tPrefix, disp.colorformat);
             if (disp.colorformat === GX_COLOR_FORMAT_8BIT_PALETTE) {
                 this.writePalette(w, theme, tPrefix);
             }
@@ -275,13 +321,12 @@ export class ResourceGenerator {
 
     // ── Color table ─────────────────────────────────────────────────────────
 
-    private writeColorTable(w: SourceWriter, theme: ThemeInfo, tPrefix: string): void {
+    private writeColorTable(w: SourceWriter, theme: ThemeInfo, tPrefix: string, colorFormat = 0): void {
         if (!theme.gen_color_table) return;
         const colors = collectByType(theme.resources, RES_TYPE_COLOR);
         if (colors.length === 0) return;
 
-        // Element 0 is reserved (GX_COLOR_ID_DEFAULT = 0 → index 0 = black)
-        const values: string[] = colors.map(c => hex32(c.colorval));
+        const values: string[] = colors.map(c => hex32(convertColor(c.colorval, colorFormat)));
         w.writeArray('GX_CONST GX_COLOR', `${tPrefix}_color_table`, values, 1);
     }
 
@@ -417,7 +462,7 @@ export class ResourceGenerator {
     /**
      * Emit GX_FONT struct for one page.
      * Mirrors WriteFontPage() link-format section (guix_version >= 50402).
-     * Comment alignment: each field line padded to col 41, then `/* ... */` comment
+     * Comment alignment: each field line padded to col 41, then a C comment
      * padded to 34 chars (matches exact C++ GUIX Studio output).
      */
     private writeFontStruct(
