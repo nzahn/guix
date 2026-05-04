@@ -41,9 +41,9 @@ function makeFontVarName(themeName: string, fontName: string): string {
     return `${themeName.toUpperCase()}_${fontName}`;
 }
 
-/** Hex char code string for a glyph data array name: FONT_{fontVar}_char_{HEX} */
+/** Hex char code string for a glyph data array name: FONT_{fontVar}_char_{hex} */
 function glyphDataVarName(fontVar: string, codePoint: number): string {
-    return `FONT_${fontVar}_char_${codePoint.toString(16).padStart(2, ' ')}`;
+    return `FONT_${fontVar}_char_${codePoint.toString(16)}`;
 }
 
 /** C format string for GX_FONT_FORMAT_*BPP constant */
@@ -282,7 +282,7 @@ export class ResourceGenerator {
 
         // Element 0 is reserved (GX_COLOR_ID_DEFAULT = 0 → index 0 = black)
         const values: string[] = colors.map(c => hex32(c.colorval));
-        w.writeArray('GX_CONST GX_COLOR', `${tPrefix}_color_table`, values);
+        w.writeArray('GX_CONST GX_COLOR', `${tPrefix}_color_table`, values, 1);
     }
 
     // ── Palette ──────────────────────────────────────────────────────────────
@@ -417,6 +417,8 @@ export class ResourceGenerator {
     /**
      * Emit GX_FONT struct for one page.
      * Mirrors WriteFontPage() link-format section (guix_version >= 50402).
+     * Comment alignment: each field line padded to col 41, then `/* ... */` comment
+     * padded to 34 chars (matches exact C++ GUIX Studio output).
      */
     private writeFontStruct(
         w: SourceWriter,
@@ -424,19 +426,28 @@ export class ResourceGenerator {
         fontData: GxFontData,
     ): void {
         const { font } = fontData;
+
+        /** Pad `field + ","` to col 41 and append an aligned comment. */
+        const fc = (field: string, comment: string): string => {
+            const line = `    ${field},`;
+            return line.padEnd(41) + `/* ${comment.padEnd(32)}*/`;
+        };
+
         w.rawBlock(
-            `static GX_CONST GX_FONT ${fontVar} =\r\n` +
+            `static GX_CONST GX_FONT ${fontVar} = \r\n` +
             `{\r\n` +
-            `    ${fontFormatMacro(font.format)},        /* format */\r\n` +
-            `    0,         /* line pre-space */\r\n` +
-            `    0,         /* line post-space */\r\n` +
-            `    ${font.height},        /* font data height */\r\n` +
-            `    ${font.baseline},        /* font baseline offset */\r\n` +
-            `    0x${font.firstGlyph.toString(16)},    /* first glyph within data page */\r\n` +
-            `    0x${font.lastGlyph.toString(16)},    /* last glyph within data page */\r\n` +
-            `    {${fontVar}_FONT_PAGE_1_GLYPHS},    /* pointer to glyph data */\r\n` +
-            `    GX_NULL       /* next font page */\r\n` +
-            `};\r\n`,
+            fc(fontFormatMacro(font.format), 'format') + `\r\n` +
+            fc('0', 'line pre-space') + `\r\n` +
+            fc('0', 'line post-space') + ` \r\n` +
+            fc(String(font.height), 'font data height') + `\r\n` +
+            fc(String(font.baseline), 'font baseline offset') + `\r\n` +
+            fc(`0x${font.firstGlyph.toString(16)}`, 'first glyph within data page') + `\r\n` +
+            fc(`0x${font.lastGlyph.toString(16)}`, 'last glyph within data page') + `\r\n` +
+            `    {${fontVar}_FONT_PAGE_1_GLYPHS},` +
+                `      /* ${'pointer to glyph data'.padEnd(32)}*/\r\n` +
+            `    GX_NULL` +
+                `                                  /* ${'next font page'.padEnd(32)}*/\r\n` +
+            `};\r\n\r\n`,
         );
     }
 

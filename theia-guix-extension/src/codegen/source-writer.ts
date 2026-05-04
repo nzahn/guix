@@ -212,17 +212,17 @@ export class SourceWriter {
 
 /** Format a 32-bit integer as 0xAABBCCDD */
 export function hex32(value: number): string {
-    return '0x' + (value >>> 0).toString(16).toUpperCase().padStart(8, '0');
+    return '0x' + (value >>> 0).toString(16).padStart(8, '0');
 }
 
 /** Format a 16-bit integer as 0xAABB */
 export function hex16(value: number): string {
-    return '0x' + (value & 0xFFFF).toString(16).toUpperCase().padStart(4, '0');
+    return '0x' + (value & 0xFFFF).toString(16).padStart(4, '0');
 }
 
 /** Format an 8-bit integer as 0xAA */
 export function hex8(value: number): string {
-    return '0x' + (value & 0xFF).toString(16).toUpperCase().padStart(2, '0');
+    return '0x' + (value & 0xFF).toString(16).padStart(2, '0');
 }
 
 /** Convert a resource name to UPPER_CASE identifier (replaces spaces/hyphens with _). */

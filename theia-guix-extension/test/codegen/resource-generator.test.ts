@@ -283,16 +283,18 @@ describe('ResourceGenerator — font emission space-padded hex for single-digit 
     const fontRes = createDefaultResInfo(RES_TYPE_FONT, 'myfont');
     project.displays[0].themes[0].resources.push(fontRes);
 
-    // Use code point 0x09 (tab) — 1 hex digit → should be padded with a space → ' 9'
+    // Use code point 0x09 (tab) — 1 hex digit → should be plain 'x' format → char_9
     const fontDataMap: FontDataMap = new Map<string, GxFontData>([
         ['myfont', makeFontData(0x09, 0x09)],
     ]);
 
     const files = new ResourceGenerator().generate(project, 0, fontDataMap);
 
-    it('single-digit code point is space-padded to 2 chars in var name', () => {
-        // '%2x' of 0x09 → ' 9'
-        expect(files.source.content).toContain('char_ 9');
+    it('single-digit code point uses plain lowercase hex (no space/zero padding)', () => {
+        // toString(16) of 0x09 → '9' (just one char — plain hex, no padding)
+        expect(files.source.content).toContain('char_9');
+        // Must NOT contain space-padded variant
+        expect(files.source.content).not.toContain('char_ 9');
     });
 });
 
