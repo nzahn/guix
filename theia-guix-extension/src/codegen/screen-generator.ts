@@ -1,14 +1,15 @@
 /**
  * ScreenGenerator — emits *_specifications.c and *_specifications.h.
  *
- * Ports guix_studio/screen_generator.cpp.
+ * Ports guix_studio/screen_generator.cpp (Revision 6.2.x format).
  *
  * Key parity requirements:
- *   - Widget ID #define names: {SCREEN}_{WIDGET}_ID
- *   - Control block typedef per screen: {SCREEN_NAME}_PROPERTIES
- *   - Per-type GX_*_PROPERTIES struct fields match gx_studio_display_configure() API
- *   - Section order in .c: includes → widget control blocks → widget tables → display table
- *   - Section order in .h: guard → includes → IDs → typedefs → prototypes
+ *   - #define GUIX_STUDIO_GENERATED_FILE at top of source
+ *   - GX_CONST GX_STUDIO_WIDGET defines in reverse DFS post-order (leaves first)
+ *   - Flat CONTROL_BLOCK typedef: GX_*_MEMBERS_DECLARE + all descendants DFS
+ *   - Display table with canvas memory arrays
+ *   - Per-type create functions (only types used in the project)
+ *   - Field comments column-aligned at col 45
  */
 
 import { injectable } from 'inversify';
