@@ -40,6 +40,10 @@ import {
     StringTableToken,
 } from './di-tokens';
 import type { GxpProject } from './common/project-model';
+import { registerFontRenderAdapter } from './utils/font-util';
+import { registerImageDecodeAdapter } from './utils/image-reader';
+import { createOpentypeFontAdapter } from './utils/opentype-font-adapter';
+import { createPngjsImageAdapter } from './utils/pngjs-image-adapter';
 
 // ---------------------------------------------------------------------------
 // DI container (root scope, one per extension host)
@@ -73,6 +77,10 @@ const openProjects = new Map<string, GxpProject>();
 // ---------------------------------------------------------------------------
 
 export function activate(context: vscode.ExtensionContext): void {
+    // Register adapters for font rendering and image decoding
+    registerFontRenderAdapter(createOpentypeFontAdapter());
+    registerImageDecodeAdapter(createPngjsImageAdapter());
+
     const reader          = container.get<GxpReader>(GxpReaderToken);
     const writer          = container.get<GxpWriter>(GxpWriterToken);
     const projectView     = container.get<ProjectView>(ProjectViewToken);

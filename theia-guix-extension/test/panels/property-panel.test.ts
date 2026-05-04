@@ -180,7 +180,15 @@ describe('applyPropertyChange — ext.* (slider)', () => {
 
     function makeSlider(): WidgetInfo {
         const w = createDefaultWidgetInfo(GX_TYPE_SLIDER);
-        expect(w.ewi?.kind).toBe('slider');
+        w.ewi = {
+            kind: 'slider',
+            info: {
+                min_val: 0, max_val: 100, current_val: 50,
+                increment: 1, min_travel: 0, max_travel: 100,
+                needle_width: 10, needle_height: 20,
+                needle_inset: 5, needle_hotspot: 0,
+            },
+        };
         return w;
     }
 
@@ -221,14 +229,29 @@ describe('applyPropertyChange — ext.* (slider)', () => {
 
 describe('applyPropertyChange — ext.* (circular gauge)', () => {
 
-    test('sets ext.xcenter', () => {
+    function makeGauge(): WidgetInfo {
         const w = createDefaultWidgetInfo(GX_TYPE_CIRCULAR_GAUGE);
+        w.ewi = {
+            kind: 'gauge',
+            info: {
+                xcenter: 0, ycenter: 0, radius: 50,
+                needle_length: 40, needle_width: 5,
+                needle_pixelmap: 0, start_angle: 0, end_angle: 360,
+                increment: 1, current_angle: 0, min_angle: 0, max_angle: 360,
+                animation_steps: 10, animation_delay: 1, animation_style: 0,
+            },
+        };
+        return w;
+    }
+
+    test('sets ext.xcenter', () => {
+        const w = makeGauge();
         apply(w, 'ext.xcenter', 80);
         expect(w.ewi!.kind === 'gauge' && w.ewi.info.xcenter).toBe(80);
     });
 
     test('sets ext.start_angle', () => {
-        const w = createDefaultWidgetInfo(GX_TYPE_CIRCULAR_GAUGE);
+        const w = makeGauge();
         apply(w, 'ext.start_angle', 45);
         expect(w.ewi!.kind === 'gauge' && w.ewi.info.start_angle).toBe(45);
     });
@@ -240,14 +263,23 @@ describe('applyPropertyChange — ext.* (circular gauge)', () => {
 
 describe('applyPropertyChange — ext.* (text input)', () => {
 
-    test('sets ext.buffer_size', () => {
+    function makeTextInput(): WidgetInfo {
         const w = createDefaultWidgetInfo(GX_TYPE_SINGLE_LINE_TEXT_INPUT);
+        w.ewi = {
+            kind: 'text_info',
+            info: { whitespace: 4, line_space: 2, buffer_size: 128, dynamic_buffer: false },
+        };
+        return w;
+    }
+
+    test('sets ext.buffer_size', () => {
+        const w = makeTextInput();
         apply(w, 'ext.buffer_size', 256);
         expect(w.ewi!.kind === 'text_info' && w.ewi.info.buffer_size).toBe(256);
     });
 
     test('sets ext.dynamic_buffer boolean', () => {
-        const w = createDefaultWidgetInfo(GX_TYPE_SINGLE_LINE_TEXT_INPUT);
+        const w = makeTextInput();
         apply(w, 'ext.dynamic_buffer', true);
         expect(w.ewi!.kind === 'text_info' && w.ewi.info.dynamic_buffer).toBe(true);
     });
@@ -259,8 +291,20 @@ describe('applyPropertyChange — ext.* (text input)', () => {
 
 describe('applyPropertyChange — ext.* (string scroll wheel)', () => {
 
-    test('sets ext.total_rows on base', () => {
+    function makeStringWheel(): WidgetInfo {
         const w = createDefaultWidgetInfo(GX_TYPE_STRING_SCROLL_WHEEL);
+        w.ewi = {
+            kind: 'string_scroll_wheel',
+            info: {
+                base: { total_rows: 5, row_height: 24, selected_row: 0, start_alpha: 255, end_alpha: 64 },
+                string_id_list: [],
+            },
+        };
+        return w;
+    }
+
+    test('sets ext.total_rows on base', () => {
+        const w = makeStringWheel();
         apply(w, 'ext.total_rows', 20);
         expect(
             w.ewi!.kind === 'string_scroll_wheel' && w.ewi.info.base.total_rows
@@ -268,7 +312,7 @@ describe('applyPropertyChange — ext.* (string scroll wheel)', () => {
     });
 
     test('sets ext.row_height on base', () => {
-        const w = createDefaultWidgetInfo(GX_TYPE_STRING_SCROLL_WHEEL);
+        const w = makeStringWheel();
         apply(w, 'ext.row_height', 32);
         expect(
             w.ewi!.kind === 'string_scroll_wheel' && w.ewi.info.base.row_height
@@ -299,6 +343,9 @@ describe('PropertyPanel.buildHtml — resource dropdowns', () => {
     function getHtml(widget: WidgetInfo, displayIdx = 0): string {
         const panel = new PropertyPanel();
         panel.showWidget(widget, makeProject(), displayIdx);
+        // view is not set, so updateView is a no-op; call buildHtml directly
+        return (panel as unknown as Record<string, (w: undefined, widget: WidgetInfo, displayIdx: number) => string>)
+            ['buildHtml'](undefined, widget, displayIdx);
     }
 
     test('color dropdown contains resource name', () => {
@@ -321,6 +368,15 @@ describe('PropertyPanel.buildHtml — resource dropdowns', () => {
 
     test('slider group appears for slider widget', () => {
         const w = createDefaultWidgetInfo(GX_TYPE_SLIDER);
+        w.ewi = {
+            kind: 'slider',
+            info: {
+                min_val: 0, max_val: 100, current_val: 50,
+                increment: 1, min_travel: 0, max_travel: 100,
+                needle_width: 10, needle_height: 20,
+                needle_inset: 5, needle_hotspot: 0,
+            },
+        };
         const html = getHtml(w, 0);
         expect(html).toContain('Min Value');
         expect(html).toContain('Max Value');
