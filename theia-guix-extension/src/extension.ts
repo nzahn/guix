@@ -20,6 +20,9 @@ import { ScreenFlowEditor } from './panels/screen-flow-editor';
 import { ResourceGenerator } from './codegen/resource-generator';
 import { ScreenGenerator } from './codegen/screen-generator';
 import { BinaryResourceGenerator, BINARY_FORMAT_RAW, BINARY_FORMAT_SREC } from './codegen/binary-resource-generator';
+import { UndoManager } from './commands/undo-manager';
+import { WidgetRegistry } from './widgets/widget-registry';
+import { StringTable } from './i18n/string-table';
 import {
     GxpReaderToken,
     GxpWriterToken,
@@ -32,6 +35,9 @@ import {
     ResourceGeneratorToken,
     ScreenGeneratorToken,
     BinaryResourceGeneratorToken,
+    UndoManagerToken,
+    WidgetRegistryToken,
+    StringTableToken,
 } from './di-tokens';
 import type { GxpProject } from './common/project-model';
 
@@ -51,6 +57,9 @@ container.bind(ScreenFlowEditorToken).to(ScreenFlowEditor);
 container.bind(ResourceGeneratorToken).to(ResourceGenerator);
 container.bind(ScreenGeneratorToken).to(ScreenGenerator);
 container.bind(BinaryResourceGeneratorToken).to(BinaryResourceGenerator);
+container.bind(UndoManagerToken).to(UndoManager);
+container.bind(WidgetRegistryToken).to(WidgetRegistry);
+container.bind(StringTableToken).to(StringTable);
 
 // ---------------------------------------------------------------------------
 // Extension state
@@ -73,6 +82,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const resGen          = container.get<ResourceGenerator>(ResourceGeneratorToken);
     const screenGen       = container.get<ScreenGenerator>(ScreenGeneratorToken);
     const binGen          = container.get<BinaryResourceGenerator>(BinaryResourceGeneratorToken);
+    const undoMgr         = container.get<UndoManager>(UndoManagerToken);
 
     // ----- Tree views -----------------------------------------------------
     context.subscriptions.push(
@@ -193,13 +203,27 @@ export function activate(context: vscode.ExtensionContext): void {
         })
     );
 
-    // ----- Undo / Redo (stubs) -------------------------------------------
+    // ----- Undo / Redo ---------------------------------------------------
     context.subscriptions.push(
         vscode.commands.registerCommand('guixStudio.undo', () => {
-            void vscode.window.showInformationMessage('Undo — not yet implemented.');
+            const uri     = activeDocumentUri();
+            const project = uri ? openProjects.get(uri) : undefined;
+            if (!project) return;
+            if (!undoMgr.canUndo()) {
+                void vscode.window.showInformationMessage('Nothing to undo.');
+                return;
+            }
+            undoMgr.undo(project);
         }),
         vscode.commands.registerCommand('guixStudio.redo', () => {
-            void vscode.window.showInformationMessage('Redo — not yet implemented.');
+            const uri     = activeDocumentUri();
+            const project = uri ? openProjects.get(uri) : undefined;
+            if (!project) return;
+            if (!undoMgr.canRedo()) {
+                void vscode.window.showInformationMessage('Nothing to redo.');
+                return;
+            }
+            undoMgr.redo(project);
         }),
         vscode.commands.registerCommand('guixStudio.addDisplay', () => {
             void vscode.window.showInformationMessage('Add Display — not yet implemented.');

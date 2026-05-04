@@ -10,6 +10,7 @@
 
 import { injectable } from 'inversify';
 import { WidgetService } from './widget-service';
+import { GX_TYPE_WIDGET } from '../common/gx-types';
 import {
     WidgetServiceBase,
     WindowService,
@@ -110,7 +111,7 @@ export class WidgetRegistry {
      * Falls back to WidgetServiceBase for unknown types.
      */
     getService(type: number): WidgetService {
-        return this.byType.get(type) ?? this.byType.get(0)!;
+        return this.byType.get(type) ?? this.byType.get(GX_TYPE_WIDGET)!;
     }
 
     /**
